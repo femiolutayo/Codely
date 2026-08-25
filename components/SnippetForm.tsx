@@ -251,14 +251,30 @@ export default function SnippetForm({
 
       const payload = buildPayload(data);
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      // Send the last known server updated_at for conflict detection so a
+      // manual save cannot overwrite changes made in another session.
+      if (editingId && serverUpdatedAtRef.current) {
+        headers["If-Unmodified-Since"] = serverUpdatedAtRef.current;
+      }
+
       const res = await fetch(
         editingId ? `/api/snippets/${editingId}` : "/api/snippets",
         {
           method: editingId ? "PUT" : "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(payload),
         },
       );
+
+      if (res.status === 409) {
+        toast.error(
+          "This snippet was modified in another session. Refresh to see the latest version.",
+        );
+        return;
+      }
 
       if (!res.ok) throw new Error("Failed to save snippet.");
 
