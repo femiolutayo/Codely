@@ -82,6 +82,18 @@ export default function SnippetForm({
   // Retry timer ref
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Build a stable snapshot string of the current form values
+  const buildSnapshot = (values: SnippetFormValues): string => {
+    return JSON.stringify({
+      title: values.title,
+      description: values.description,
+      code: values.code,
+      language: values.language,
+      tags: values.tags,
+      licenseType: values.licenseType,
+    });
+  };
+
   useEffect(() => {
     reset({
       title: initialValues?.title ?? "",
@@ -110,18 +122,6 @@ export default function SnippetForm({
 
   // Watch all form fields to trigger autosave
   const watchedValues = watch();
-
-  // Build a stable snapshot string of the current form values
-  const buildSnapshot = (values: SnippetFormValues): string => {
-    return JSON.stringify({
-      title: values.title,
-      description: values.description,
-      code: values.code,
-      language: values.language,
-      tags: values.tags,
-      licenseType: values.licenseType,
-    });
-  };
 
   const buildPayload = (values: SnippetFormValues) => ({
     title: values.title,
