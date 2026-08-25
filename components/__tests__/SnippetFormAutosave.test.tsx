@@ -247,8 +247,8 @@ describe("SnippetForm Autosave", () => {
     const saveButton = screen.getByRole("button", { name: /Update Snippet/i });
     fireEvent.click(saveButton);
 
-    await act(async () => {
-      await Promise.resolve();
+    await waitFor(() => {
+      expect(mockCloseForm).toHaveBeenCalled();
     });
 
     // Manual save should have been called
@@ -256,6 +256,5 @@ describe("SnippetForm Autosave", () => {
       "/api/snippets/snippet-1",
       expect.objectContaining({ method: "PUT" }),
     );
-    expect(mockCloseForm).toHaveBeenCalled();
   });
 });
