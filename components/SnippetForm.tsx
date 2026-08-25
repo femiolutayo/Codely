@@ -16,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { LANGUAGES } from "@/lib/languages";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { SnippetFormValues } from "@/types/type";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { snippetSchema } from "@/validiation/snippet-form-validiation";
@@ -30,6 +30,15 @@ interface SnippetFormProps {
   isLoading?: boolean; // Added hook control to intercept loading state
 }
 
+type AutosaveStatus = "idle" | "saving" | "saved" | "error";
+
+// Debounce delay for autosave (ms)
+const AUTOSAVE_DEBOUNCE_MS = 2000;
+// Retry delay after a failed autosave (ms)
+const AUTOSAVE_RETRY_MS = 5000;
+// Max consecutive retries before giving up on the current draft
+const MAX_AUTOSAVE_RETRIES = 3;
+
 export default function SnippetForm({
   editingId,
   initialValues,
@@ -38,12 +47,16 @@ export default function SnippetForm({
   isLoading = false,
 }: SnippetFormProps) {
   const [submitting, setSubmitting] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 
   const {
     register,
     handleSubmit,
     control,
     reset,
+    watch,
+    getValues,
     formState: { errors },
   } = useForm<SnippetFormValues>({
     resolver: zodResolver(snippetSchema),
@@ -56,6 +69,19 @@ export default function SnippetForm({
     },
   });
 
+  // Track the server's updated_at for conflict detection
+  const serverUpdatedAtRef = useRef<string | null>(null);
+  // Track the last successfully autosaved snapshot to avoid redundant saves
+  const lastSavedSnapshotRef = useRef<string>("");
+  // Track retry count for the current pending draft
+  const retryCountRef = useRef(0);
+  // Flag to prevent autosave while a manual save is in progress
+  const manualSavingRef = useRef(false);
+  // Debounce timer ref
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Retry timer ref
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     reset({
       title: initialValues?.title ?? "",
@@ -65,24 +91,156 @@ export default function SnippetForm({
       tags: initialValues?.tags ?? "",
       licenseType: initialValues?.licenseType ?? "None",
     });
+    // Reset autosave state when switching snippets
+    serverUpdatedAtRef.current = null;
+    lastSavedSnapshotRef.current = "";
+    retryCountRef.current = 0;
+    setAutosaveStatus("idle");
+    setLastSavedAt(null);
   }, [initialValues, reset]);
+
+  // Watch all form fields to trigger autosave
+  const watchedValues = watch();
+
+  // Build a stable snapshot string of the current form values
+  const buildSnapshot = (values: SnippetFormValues): string => {
+    return JSON.stringify({
+      title: values.title,
+      description: values.description,
+      code: values.code,
+      language: values.language,
+      tags: values.tags,
+      licenseType: values.licenseType,
+    });
+  };
+
+  const buildPayload = (values: SnippetFormValues) => ({
+    title: values.title,
+    description: values.description,
+    code: values.code,
+    language: values.language,
+    tags: values.tags
+      ? values.tags
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean)
+      : [],
+    licenseType: values.licenseType === "None" ? undefined : values.licenseType,
+  });
+
+  const performAutosave = async () => {
+    if (!editingId) return;
+    if (manualSavingRef.current) return;
+
+    const values = getValues();
+    const snapshot = buildSnapshot(values);
+
+    // Skip if nothing changed since last successful save
+    if (snapshot === lastSavedSnapshotRef.current) {
+      return;
+    }
+
+    // Basic validation before autosaving — skip if required fields are empty
+    if (!values.title || !values.description || !values.code || !values.language) {
+      return;
+    }
+
+    setAutosaveStatus("saving");
+
+    try {
+      const payload = buildPayload(values);
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      // Send the last known server updated_at for conflict detection
+      if (serverUpdatedAtRef.current) {
+        headers["If-Unmodified-Since"] = serverUpdatedAtRef.current;
+      }
+
+      const res = await fetch(`/api/snippets/${editingId}`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (res.status === 409) {
+        // Conflict — another session modified the snippet
+        setAutosaveStatus("error");
+        toast.error(
+          "This snippet was modified in another session. Your changes were not overwritten.",
+        );
+        return;
+      }
+
+      if (!res.ok) throw new Error("Autosave failed");
+
+      const updated = await res.json();
+      if (updated?.updated_at) {
+        serverUpdatedAtRef.current = updated.updated_at;
+      }
+
+      lastSavedSnapshotRef.current = snapshot;
+      retryCountRef.current = 0;
+      setAutosaveStatus("saved");
+      setLastSavedAt(new Date());
+    } catch (error) {
+      console.error("Autosave error:", error);
+      setAutosaveStatus("error");
+      toast.error("Autosave failed. Retrying…");
+
+      // Retry mechanism
+      if (retryCountRef.current < MAX_AUTOSAVE_RETRIES) {
+        retryCountRef.current += 1;
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = setTimeout(() => {
+          performAutosave();
+        }, AUTOSAVE_RETRY_MS);
+      } else {
+        toast.error(
+          "Autosave failed repeatedly. Your changes are still in the editor — please save manually.",
+        );
+      }
+    }
+  };
+
+  // Debounced autosave effect
+  useEffect(() => {
+    if (!editingId) return;
+    if (manualSavingRef.current) return;
+
+    // Skip autosave until initial values are loaded
+    if (!watchedValues.title && !watchedValues.code) return;
+
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      performAutosave();
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchedValues, editingId]);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, []);
 
   const onSubmit = async (data: SnippetFormValues) => {
     try {
       setSubmitting(true);
-      const payload = {
-        title: data.title,
-        description: data.description,
-        code: data.code,
-        language: data.language,
-        tags: data.tags
-          ? data.tags
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean)
-          : [],
-        licenseType: data.licenseType === "None" ? undefined : data.licenseType,
-      };
+      manualSavingRef.current = true;
+
+      // Cancel any pending autosave timers
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+
+      const payload = buildPayload(data);
 
       const res = await fetch(
         editingId ? `/api/snippets/${editingId}` : "/api/snippets",
@@ -95,6 +253,15 @@ export default function SnippetForm({
 
       if (!res.ok) throw new Error("Failed to save snippet.");
 
+      const saved = await res.json();
+      if (saved?.updated_at) {
+        serverUpdatedAtRef.current = saved.updated_at;
+      }
+      lastSavedSnapshotRef.current = buildSnapshot(data);
+      retryCountRef.current = 0;
+      setAutosaveStatus("saved");
+      setLastSavedAt(new Date());
+
       await onSuccess();
       closeForm();
     } catch (error) {
@@ -102,7 +269,62 @@ export default function SnippetForm({
       toast.error("Failed to save snippet. Please try again.");
     } finally {
       setSubmitting(false);
+      manualSavingRef.current = false;
     }
+  };
+
+  const renderAutosaveStatus = () => {
+    if (!editingId) return null;
+
+    let content: React.ReactNode;
+    let className = "";
+
+    switch (autosaveStatus) {
+      case "saving":
+        content = (
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-yellow-400 animate-pulse" />
+            Saving…
+          </span>
+        );
+        className = "text-yellow-400";
+        break;
+      case "saved":
+        content = (
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-green-500" />
+            Saved
+            {lastSavedAt
+              ? ` ${lastSavedAt.toLocaleTimeString()}`
+              : ""}
+          </span>
+        );
+        className = "text-green-400";
+        break;
+      case "error":
+        content = (
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-red-500" />
+            Autosave failed — retrying
+          </span>
+        );
+        className = "text-red-400";
+        break;
+      default:
+        content = (
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-gray-500" />
+            Unsaved changes
+          </span>
+        );
+        className = "text-gray-400";
+    }
+
+    return (
+      <div className={`text-xs font-medium ${className}`} role="status">
+        {content}
+      </div>
+    );
   };
 
   // Intercept layout rendering if initial data prefetch is unresolved
@@ -116,9 +338,12 @@ export default function SnippetForm({
 
   return (
     <Card className="mb-8 bg-slate-800/50 border-purple-500/30 backdrop-blur-xl p-6 skeleton-fade-in">
-      <h2 className="text-2xl font-bold text-white mb-6">
-        {editingId ? "Edit Snippet" : "Add New Snippet"}
-      </h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold text-white">
+          {editingId ? "Edit Snippet" : "Add New Snippet"}
+        </h2>
+        {renderAutosaveStatus()}
+      </div>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         <div className="space-y-2">
           <Label htmlFor="title" className="text-white">

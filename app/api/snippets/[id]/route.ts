@@ -167,6 +167,29 @@ export async function PUT(
       );
     }
 
+    // Conflict detection: if the client sends If-Unmodified-Since, verify the
+    // snippet hasn't been modified since that timestamp. This prevents autosave
+    // from overwriting changes made in another session/editor.
+    const ifUnmodifiedSince = req.headers.get("If-Unmodified-Since");
+    if (ifUnmodifiedSince) {
+      const current = await service.getSnippetById(id);
+      const currentUpdatedAt = current?.updated_at
+        ? new Date(current.updated_at).getTime()
+        : 0;
+      const clientTimestamp = new Date(ifUnmodifiedSince).getTime();
+
+      if (currentUpdatedAt > clientTimestamp) {
+        return NextResponse.json(
+          {
+            error: "Conflict",
+            message:
+              "This snippet was modified in another session. Refresh to see the latest version.",
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const body = await req.json();
     const snippet = await service.updateSnippet(id, body);
 
