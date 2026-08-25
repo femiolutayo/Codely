@@ -15,6 +15,8 @@ export type ActivityAction =
   | "snippet.deleted"
   | "snippet.soft_deleted"
   | "snippet.restored"
+  | "snippet.forked"
+  | "snippet.duplicated"
   | "snippet.owner_transfer"
   | "snippet.owner_transfer_failed"
   | "wallet.connected"
