@@ -93,7 +93,16 @@ export default function SnippetForm({
     });
     // Reset autosave state when switching snippets
     serverUpdatedAtRef.current = null;
-    lastSavedSnapshotRef.current = "";
+    // Seed the last-saved snapshot with the initial values so that autosave
+    // does not fire until the user actually changes something.
+    lastSavedSnapshotRef.current = buildSnapshot({
+      title: initialValues?.title ?? "",
+      description: initialValues?.description ?? "",
+      code: initialValues?.code ?? "",
+      language: initialValues?.language ?? "javascript",
+      tags: initialValues?.tags ?? "",
+      licenseType: initialValues?.licenseType ?? "None",
+    });
     retryCountRef.current = 0;
     setAutosaveStatus("idle");
     setLastSavedAt(null);
