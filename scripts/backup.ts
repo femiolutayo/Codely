@@ -9,6 +9,7 @@ async function main() {
     const metadata = await createBackup();
     console.log('Backup completed successfully!');
     console.log(metadata);
+    
   } catch (error) {
     console.error('Backup failed:', error);
     process.exit(1);
