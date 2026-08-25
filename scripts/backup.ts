@@ -4,6 +4,7 @@ loadEnvConfig(process.cwd());
 import { createBackup } from '../lib/backup.service';
 
 async function main() {
+  
   console.log('Starting manual backup...');
   try {
     const metadata = await createBackup();
