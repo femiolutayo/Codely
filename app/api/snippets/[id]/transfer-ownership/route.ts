@@ -102,7 +102,7 @@ export async function POST(
     }
 
     // Atomic ownership update (guard by old owner)
-    const updated = await (repository as any).transferOwnershipAtomic?.({
+    let updated = await (repository as any).transferOwnershipAtomic?.({
       snippetId: id,
       oldOwnerWalletAddress,
       newOwnerWalletAddress,

@@ -1,5 +1,12 @@
 import { SnippetService } from "../app/api/snippets/snippet.service";
 import { SnippetRepository } from "../app/api/snippets/snippet.repository";
+import { IPFSService } from "../lib/ipfs.service";
+
+jest.mock("../lib/ipfs.service", () => ({
+  IPFSService: {
+    uploadToIPFS: jest.fn().mockResolvedValue("QmTestCID"),
+  },
+}));
 
 // Mock the repository
 const mockRepository = {
@@ -119,12 +126,15 @@ describe("SnippetService", () => {
           "G1234567890123456789012345678901234567890123456789012345",
       };
 
-      const expectedResult = { id: "1", ...validData };
+      const expectedResult = { id: "1", ...validData, ipfsCid: "QmTestCID" };
       (mockRepository.create as jest.Mock).mockResolvedValue(expectedResult);
 
       const result = await service.createSnippet(validData);
       expect(result).toEqual(expectedResult);
-      expect(mockRepository.create).toHaveBeenCalledWith(validData);
+      expect(mockRepository.create).toHaveBeenCalledWith({
+        ...validData,
+        ipfsCid: "QmTestCID",
+      });
     });
 
     it("should throw error with invalid data", async () => {
@@ -139,6 +149,10 @@ describe("SnippetService", () => {
       const updateData = { title: "Updated Title" };
       const updatedSnippet = { id: "1", title: "Updated Title" };
 
+      (mockRepository.findById as jest.Mock).mockResolvedValue({
+        id: "1",
+        title: "Old Title",
+      });
       (mockRepository.update as jest.Mock).mockResolvedValue(updatedSnippet);
 
       const result = await service.updateSnippet("1", updateData);
@@ -148,6 +162,7 @@ describe("SnippetService", () => {
 
     it("should throw error when snippet not found", async () => {
       const updateData = { title: "Updated Title" };
+      (mockRepository.findById as jest.Mock).mockResolvedValue(null);
       (mockRepository.update as jest.Mock).mockResolvedValue(null);
 
       await expect(service.updateSnippet("999", updateData)).rejects.toThrow(
