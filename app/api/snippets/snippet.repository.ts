@@ -163,13 +163,13 @@ export class SnippetRepository {
     return result[0] || null;
   }
 
-  async create(data: CreateSnippetDTO & { licenseTransactionHash?: string; licenseMetadata?: any; ipfsCid?: string }) {
+  async create(data: CreateSnippetDTO & { licenseTransactionHash?: string; licenseMetadata?: any; ipfsCid?: string; originalSnippetId?: string }) {
     const id = crypto.randomUUID();
     const createdAt = new Date();
 
     const result = await this.sql`
-      INSERT INTO snippets (id, title, description, code, language, tags, owner_wallet_address, license_type, license_transaction_hash, license_metadata, ipfs_cid, created_at, updated_at) 
-      VALUES (${id}, ${data.title}, ${data.description}, ${data.code}, ${data.language}, ${data.tags}, ${data.ownerWalletAddress}, ${data.licenseType || null}, ${data.licenseTransactionHash || null}, ${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, ${data.ipfsCid || null}, ${createdAt}, ${createdAt}) 
+      INSERT INTO snippets (id, title, description, code, language, tags, owner_wallet_address, license_type, license_transaction_hash, license_metadata, ipfs_cid, original_snippet_id, created_at, updated_at) 
+      VALUES (${id}, ${data.title}, ${data.description}, ${data.code}, ${data.language}, ${data.tags}, ${data.ownerWalletAddress}, ${data.licenseType || null}, ${data.licenseTransactionHash || null}, ${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, ${data.ipfsCid || null}, ${data.originalSnippetId || null}, ${createdAt}, ${createdAt}) 
       RETURNING *
     `;
     await logEvent("snippet_created", data.ownerWalletAddress, id, data.title);
@@ -368,5 +368,84 @@ export class SnippetRepository {
       ORDER BY count DESC, tag ASC
     `;
     return result as any[];
+  }
+
+  /**
+   * Duplicate a snippet: create an identical copy in the requesting user's collection.
+   * Preserves title, description, code, language, and tags.
+   * Sets originalSnippetId for traceability.
+   */
+  async duplicateSnippet(
+    sourceId: string,
+    newOwnerWalletAddress: string,
+    overrides?: { title?: string; description?: string; code?: string },
+  ) {
+    const source = await this.findById(sourceId);
+    if (!source) return null;
+
+    const id = crypto.randomUUID();
+    const createdAt = new Date();
+
+    const result = await this.sql`
+      INSERT INTO snippets (
+        id, title, description, code, language, tags,
+        owner_wallet_address, original_snippet_id,
+        created_at, updated_at
+      ) VALUES (
+        ${id},
+        ${overrides?.title ?? source.title},
+        ${overrides?.description ?? source.description},
+        ${overrides?.code ?? source.code},
+        ${source.language},
+        ${JSON.stringify(source.tags)}::jsonb,
+        ${newOwnerWalletAddress},
+        ${sourceId},
+        ${createdAt},
+        ${createdAt}
+      )
+      RETURNING *
+    `;
+
+    await logEvent("snippet_duplicated", newOwnerWalletAddress, id, `Duplicated from ${sourceId}`);
+    return result[0] || null;
+  }
+
+  /**
+   * Fork a snippet: create a derived copy with editable content in the requesting user's collection.
+   * Same as duplicate but intended for mutation; preserves original reference.
+   */
+  async forkSnippet(
+    sourceId: string,
+    newOwnerWalletAddress: string,
+    overrides?: { title?: string; description?: string; code?: string },
+  ) {
+    const source = await this.findById(sourceId);
+    if (!source) return null;
+
+    const id = crypto.randomUUID();
+    const createdAt = new Date();
+
+    const result = await this.sql`
+      INSERT INTO snippets (
+        id, title, description, code, language, tags,
+        owner_wallet_address, original_snippet_id,
+        created_at, updated_at
+      ) VALUES (
+        ${id},
+        ${overrides?.title ?? `${source.title} (fork)`},
+        ${overrides?.description ?? source.description},
+        ${overrides?.code ?? source.code},
+        ${source.language},
+        ${JSON.stringify(source.tags)}::jsonb,
+        ${newOwnerWalletAddress},
+        ${sourceId},
+        ${createdAt},
+        ${createdAt}
+      )
+      RETURNING *
+    `;
+
+    await logEvent("snippet_forked", newOwnerWalletAddress, id, `Forked from ${sourceId}`);
+    return result[0] || null;
   }
 }

@@ -19,5 +19,12 @@ export const updateSnippetSchema = z.object({
   licenseType: z.string().optional(),
 });
 
+export const forkDuplicateSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+  code: z.string().min(1).optional(),
+});
+
 export type CreateSnippetDTO = z.infer<typeof createSnippetSchema>;
 export type UpdateSnippetDTO = z.infer<typeof updateSnippetSchema>;
+export type ForkDuplicateDTO = z.infer<typeof forkDuplicateSchema>;

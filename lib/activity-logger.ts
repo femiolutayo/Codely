@@ -17,6 +17,8 @@ export type ActivityAction =
   | "snippet.restored"
   | "snippet.owner_transfer"
   | "snippet.owner_transfer_failed"
+  | "snippet.duplicated"
+  | "snippet.forked"
   | "wallet.connected"
   | "wallet.disconnected"
   | "signature.verified"
