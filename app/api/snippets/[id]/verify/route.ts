@@ -2,10 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getSnippetWithHash,
   verifySnippetIntegrity,
-  storeSnippetHash,
 } from "@/lib/db";
 import { generateSnippetHash } from "@/lib/hash";
-import { submitHashToStellar } from "@/lib/stellar";
+import { StellarRecoveryService } from "@/lib/stellar-recovery.service";
+
+const recoveryService = new StellarRecoveryService();
+
+function buildIdempotencyKey(snippetId: string, contentHash: string): string {
+  return `hash:${snippetId.slice(0, 8)}:${contentHash.slice(0, 16)}`;
+}
 
 /**
  * POST /api/snippets/[id]/verify
@@ -13,12 +18,9 @@ import { submitHashToStellar } from "@/lib/stellar";
  * Anchors the snippet's creation timestamp + content hash on the Stellar
  * blockchain, providing immutable proof-of-existence.
  *
- * - The snippet's `created_at` timestamp is embedded in the Stellar memo,
- *   permanently linking the snippet ID, its content hash, and its creation
- *   time to a specific on-chain transaction.
- * - Once stored, the record cannot be overwritten (immutability enforced in DB).
- *
- * Body: { secretKey?: string }
+ * Uses the recovery service for retry-safe processing. If the Stellar
+ * submission fails with a retryable error, the transaction is queued
+ * for automatic retry via the cron-based recovery engine.
  */
 export async function POST(
   req: NextRequest,
@@ -32,7 +34,6 @@ export async function POST(
       return NextResponse.json({ error: "Snippet not found" }, { status: 404 });
     }
 
-    // Reject if already verified — timestamps are immutable
     if (snippet.on_chain_hash) {
       return NextResponse.json(
         {
@@ -50,7 +51,6 @@ export async function POST(
       );
     }
 
-    // Generate SHA-256 hash of snippet content
     const onChainHash = generateSnippetHash(
       snippet.title,
       snippet.description || "",
@@ -59,7 +59,6 @@ export async function POST(
       snippet.tags || [],
     );
 
-    // Use the snippet's original creation timestamp as the proof-of-existence anchor
     const createdAt: string =
       snippet.created_at instanceof Date
         ? snippet.created_at.toISOString()
@@ -71,31 +70,77 @@ export async function POST(
       createdAt,
     });
 
-    // Submit to Stellar — memo encodes snippetId + contentHash + createdAt
-    const secretKey = process.env.STELLAR_SECRET_KEY || "";
-    const stellarResult = await submitHashToStellar(
-      secretKey,
-      onChainHash,
-      id,
-      createdAt,
-    );
+    const idempotencyKey = buildIdempotencyKey(id, onChainHash);
 
-    if (!stellarResult.success) {
+    const existing = await recoveryService.getStatusByKey(idempotencyKey);
+    if (existing && existing.status === "confirmed" && existing.callback_status === "applied") {
+      return NextResponse.json({
+        success: true,
+        message: "Snippet already anchored on Stellar blockchain",
+        data: {
+          snippetId: id,
+          onChainHash,
+          transactionHash: existing.stellar_tx_hash,
+          verifiedAt: snippet.verified_at || new Date().toISOString(),
+          createdAt,
+        },
+      });
+    }
+
+    if (existing && existing.status === "dead") {
       return NextResponse.json(
         {
-          error: "Failed to submit to Stellar blockchain",
-          details: stellarResult.error,
+          error: "Stellar anchoring failed permanently",
+          details: existing.last_error,
         },
         { status: 502 },
       );
     }
 
-    // Persist hash + tx hash — immutability enforced inside storeSnippetHash
-    const updatedSnippet = await storeSnippetHash(
-      id,
-      onChainHash,
-      stellarResult.transactionHash!,
-    );
+    if (existing && (existing.status === "pending" || existing.status === "submitted" || existing.status === "failed")) {
+      return NextResponse.json(
+        {
+          status: "recovering",
+          idempotencyKey,
+          transactionId: existing.id,
+          stellarTxHash: existing.stellar_tx_hash,
+          message: "Anchoring transaction is being processed. Poll /transaction-status for updates.",
+        },
+        { status: 202 },
+      );
+    }
+
+    const record = await recoveryService.submitHashAnchoring({
+      idempotencyKey,
+      snippetId: id,
+      contentHash: onChainHash,
+      createdAt,
+    });
+
+    if (record.status === "dead") {
+      return NextResponse.json(
+        {
+          error: "Failed to submit to Stellar blockchain",
+          details: record.last_error,
+        },
+        { status: 502 },
+      );
+    }
+
+    if (record.status !== "confirmed" || record.callback_status !== "applied") {
+      return NextResponse.json(
+        {
+          status: "recovering",
+          idempotencyKey,
+          transactionId: record.id,
+          stellarTxHash: record.stellar_tx_hash,
+          message: record.stellar_tx_hash
+            ? "Transaction confirmed. Awaiting database update."
+            : "Anchoring transaction queued for processing.",
+        },
+        { status: 202 },
+      );
+    }
 
     return NextResponse.json({
       success: true,
@@ -103,16 +148,14 @@ export async function POST(
       data: {
         snippetId: id,
         onChainHash,
-        transactionHash: stellarResult.transactionHash,
-        stellarMemo: stellarResult.memo,
+        transactionHash: record.stellar_tx_hash,
         createdAt,
-        verifiedAt: updatedSnippet.verified_at,
+        verifiedAt: new Date().toISOString(),
       },
     });
   } catch (error: any) {
     console.error("[verify] Error anchoring snippet:", error);
 
-    // Surface immutability violations as 409
     if (error?.message?.includes("immutable")) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
