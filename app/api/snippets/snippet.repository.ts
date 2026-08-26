@@ -168,8 +168,8 @@ export class SnippetRepository {
     const createdAt = new Date();
 
     const result = await this.sql`
-      INSERT INTO snippets (id, title, description, code, language, tags, owner_wallet_address, license_type, license_transaction_hash, license_metadata, ipfs_cid, created_at, updated_at) 
-      VALUES (${id}, ${data.title}, ${data.description}, ${data.code}, ${data.language}, ${data.tags}, ${data.ownerWalletAddress}, ${data.licenseType || null}, ${data.licenseTransactionHash || null}, ${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, ${data.ipfsCid || null}, ${createdAt}, ${createdAt}) 
+      INSERT INTO snippets (id, title, description, code, language, tags, owner_wallet_address, license_type, license_transaction_hash, license_metadata, ipfs_cid, visibility, created_at, updated_at) 
+      VALUES (${id}, ${data.title}, ${data.description}, ${data.code}, ${data.language}, ${data.tags}, ${data.ownerWalletAddress}, ${data.licenseType || null}, ${data.licenseTransactionHash || null}, ${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, ${data.ipfsCid || null}, ${data.visibility || "private"}, ${createdAt}, ${createdAt}) 
       RETURNING *
     `;
     await logEvent("snippet_created", data.ownerWalletAddress, id, data.title);
@@ -209,12 +209,9 @@ export class SnippetRepository {
       values.push(data.ipfsCid);
     }
 
-    if (updates.length === 0 && !data.licenseType && !data.licenseTransactionHash) {
+    if (updates.length === 0 && !data.licenseType && !data.licenseTransactionHash && data.visibility === undefined) {
       return this.findById(id);
     }
-
-    // Build the SET clause with proper parameter placeholders
-    const setClause = updates.join(", ");
 
     // Use raw SQL for dynamic updates
     const result = await this.sql`
@@ -228,6 +225,7 @@ export class SnippetRepository {
           license_transaction_hash = COALESCE(${data.licenseTransactionHash || null}, license_transaction_hash),
           license_metadata = COALESCE(${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, license_metadata),
           ipfs_cid = COALESCE(${data.ipfsCid || null}, ipfs_cid),
+          visibility = COALESCE(${data.visibility || null}, visibility),
           updated_at = ${updatedAt}
       WHERE id = ${id} AND is_deleted = false
       RETURNING *
