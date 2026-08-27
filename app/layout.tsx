@@ -40,6 +40,9 @@ export default function RootLayout({
 	return (
 		<html lang='en' suppressHydrationWarning>
 			<body className={`${geistSans.variable} ${geistMono.variable} font-sans antialiased`}>
+				<a className="skip-link" href="#main-content">
+					Skip to main content
+				</a>
 				<ClientWalletProvider>
 					{children}
 				</ClientWalletProvider>
