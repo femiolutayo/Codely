@@ -8,6 +8,13 @@ export const createSnippetSchema = z.object({
   tags: z.array(z.string()).min(1, "At least one tag is required"),
   ownerWalletAddress: z.string().min(1, "Owner wallet address is required"),
   licenseType: z.string().optional(),
+  ownershipProof: z.object({
+    snippetId: z.string().uuid(),
+    hash: z.string().length(64),
+    ownerWallet: z.string().min(1),
+    signature: z.string().min(1),
+    createdAt: z.string().datetime(),
+  }).optional(),
 });
 
 export const updateSnippetSchema = z.object({

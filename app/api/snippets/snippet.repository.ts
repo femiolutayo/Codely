@@ -2,6 +2,7 @@ import { logEvent } from "@/lib/audit";
 import { neon } from "@neondatabase/serverless";
 import crypto from "crypto";
 import { CreateSnippetDTO, UpdateSnippetDTO } from "./snippet.validator";
+import { SnippetOwnershipProof } from "@/lib/snippet-ownership-proof";
 
 // Pagination options interface
 export interface PaginationOptions {
@@ -65,6 +66,28 @@ export class SnippetRepository {
         AND is_deleted = false
     `;
     return result[0]?.owner_wallet_address || null;
+  }
+
+  async saveOwnershipProof(proof: SnippetOwnershipProof, anchoredTransactionHash?: string) {
+    const result = await this.sql`
+      INSERT INTO snippet_ownership_proofs
+        (snippet_id, content_hash, owner_wallet, signature, created_at, anchored_transaction_hash, anchored_at)
+      VALUES
+        (${proof.snippetId}, ${proof.hash}, ${proof.ownerWallet}, ${proof.signature}, ${proof.createdAt}, ${anchoredTransactionHash || null}, ${anchoredTransactionHash ? new Date() : null})
+      ON CONFLICT (snippet_id) DO NOTHING
+      RETURNING *
+    `;
+    return result[0] || null;
+  }
+
+  async findOwnershipProof(snippetId: string) {
+    const result = await this.sql`
+      SELECT snippet_id, content_hash AS hash, owner_wallet AS "ownerWallet",
+             signature, created_at AS "createdAt", anchored_transaction_hash AS "anchoredTransactionHash"
+      FROM snippet_ownership_proofs
+      WHERE snippet_id = ${snippetId}
+    `;
+    return result[0] || null;
   }
 
 
@@ -163,8 +186,8 @@ export class SnippetRepository {
     return result[0] || null;
   }
 
-  async create(data: CreateSnippetDTO & { licenseTransactionHash?: string; licenseMetadata?: any; ipfsCid?: string }) {
-    const id = crypto.randomUUID();
+  async create(data: CreateSnippetDTO & { id?: string; licenseTransactionHash?: string; licenseMetadata?: any; ipfsCid?: string }) {
+    const id = data.id || crypto.randomUUID();
     const createdAt = new Date();
 
     const result = await this.sql`

@@ -20,7 +20,10 @@ export type ActivityAction =
   | "wallet.connected"
   | "wallet.disconnected"
   | "signature.verified"
-  | "signature.failed";
+  | "signature.failed"
+  | "snippet.proof_generated"
+  | "snippet.proof_verified"
+  | "snippet.proof_verification_failed";
 
 export interface ActivityLogEntry {
   id: string;
@@ -41,7 +44,7 @@ export class ActivityLogger {
     try {
       const id = crypto.randomUUID();
       const createdAt = new Date();
-      const db = getSql();
+      const db = sql;
 
       if (!db) {
         console.log(`[ActivityLog] ${action} logged for snippet ${snippetId} (no DB)`, {
@@ -97,8 +100,6 @@ export function extractIp(headers: Headers): string {
 export function extractUserAgent(headers: Headers): string | null {
   return headers.get("user-agent") ?? null;
 }
-
-export type ResourceType = "snippet" | "wallet";
 
 /** Resource types that can be referenced by a log entry. */
 export type ResourceType = "snippet" | "wallet";

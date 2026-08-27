@@ -14,6 +14,7 @@ import {
   reorderFolder,
 } from "@/lib/snippet-folders";
 import { recordRecentSnippet } from "@/lib/recent-snippets-storage";
+import { SnippetOwnershipBadge } from "@/components/SnippetOwnershipBadge";
 
 interface SnippetSummary { id: string; title: string; language: string; description?: string; }
 type DragItem = { type: "snippet"; id: string } | { type: "folder"; id: string };
@@ -78,6 +79,7 @@ export function SnippetFolderOrganizer({ snippets }: { snippets: SnippetSummary[
         <GripVertical className="h-4 w-4 text-slate-600 group-hover:text-fuchsia-300" />
         <FileCode2 className="h-4 w-4 text-blue-300" />
         <div className="min-w-0"><h3 className="truncate text-sm font-medium text-slate-100">{snippet.title}</h3><p className="text-xs text-slate-500">{snippet.language}</p></div>
+        <SnippetOwnershipBadge snippetId={snippet.id} />
       </article>
     );
   };
