@@ -11,6 +11,7 @@ export interface SnippetVersion {
   content: {
     title: string;
     description: string;
+    
     code: string;
     language: string;
     tags: string[];
