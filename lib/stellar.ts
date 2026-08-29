@@ -2,6 +2,10 @@
 import crypto from "crypto";
 
 import * as StellarSdk from "stellar-sdk";
+import {
+  StellarTransactionConfirmationService,
+} from "@/lib/transaction-confirmation.service";
+import { appendActivityLog } from "@/lib/activity-logger";
 
 const STELLAR_NETWORK = process.env.NEXT_PUBLIC_STELLAR_NETWORK || "testnet";
 const STELLAR_SECRET_KEY = process.env.STELLAR_SECRET_KEY || "";
@@ -23,6 +27,112 @@ export interface StellarSubmitResult {
   timestamp?: string;
   memo?: string;
   error?: string;
+  /** Added by confirmation flow integration */
+  lifecycle?: string;
+  confirmedAt?: string;
+}
+
+/**
+ * Submit a Stellar transaction with full confirmation lifecycle tracking.
+ *
+ * Uses the StellarTransactionConfirmationService to:
+ *  1. Build/sign/submit the transaction
+ *  2. Poll Horizon until confirmation
+ *  3. Persist the lifecycle (preparing → submitted → confirming → confirmed/failed)
+ *  4. Emit activity log events for auditability
+ */
+export async function submitTransactionWithConfirmation({
+  secretKey,
+  walletAddress,
+  operations,
+  memo,
+  metadata,
+}: {
+  secretKey: string;
+  walletAddress: string;
+  operations: any[];
+  memo?: StellarSdk.Memo;
+  metadata?: Record<string, unknown>;
+}): Promise<StellarSubmitResult> {
+  const key = secretKey || STELLAR_SECRET_KEY;
+
+  if (!key) {
+    const timestamp = new Date().toISOString();
+    const txHash = crypto
+      .createHash("sha256")
+      .update(`${walletAddress}:${timestamp}:${crypto.randomUUID()}`)
+      .digest("hex");
+
+    console.warn(
+      "[Stellar] Transaction confirmation: no secret key configured — using deterministic mock.",
+    );
+
+    return {
+      success: true,
+      transactionHash: txHash,
+      timestamp,
+      lifecycle: "confirmed",
+      confirmedAt: timestamp,
+    };
+  }
+
+  let confirmationService: StellarTransactionConfirmationService | null = null;
+  try {
+    confirmationService = new StellarTransactionConfirmationService();
+    const confirmation = await confirmationService.submitAndConfirm({
+      secretKey: key,
+      walletAddress,
+      operations: operations as StellarSdk.Operation[],
+      memo,
+      metadata,
+    });
+
+    // Emit audit log
+    await appendActivityLog(
+      "snippet.updated",
+      "wallet",
+      {
+        actorWallet: walletAddress,
+        metadata: {
+          txHash: confirmation.stellarTxHash,
+          lifecycle: confirmation.lifecycle,
+          status: confirmation.status,
+          ledger: confirmation.ledger,
+          ...metadata,
+        },
+      },
+    );
+
+    return {
+      success: confirmation.status === "successful",
+      transactionHash: confirmation.stellarTxHash,
+      ledger: confirmation.ledger ?? undefined,
+      timestamp: confirmation.confirmedAt ?? confirmation.createdAt,
+      memo: confirmation.memo ?? undefined,
+      lifecycle: confirmation.lifecycle,
+      confirmedAt: confirmation.confirmedAt ?? undefined,
+      error: confirmation.errorMessage ?? undefined,
+    };
+  } catch (error: any) {
+    console.error("[Stellar] Transaction confirmation failed:", error?.message);
+
+    await appendActivityLog(
+      "snippet.owner_transfer_failed",
+      "wallet",
+      {
+        actorWallet: walletAddress,
+        metadata: {
+          error: error?.message,
+          ...metadata,
+        },
+      },
+    );
+
+    return {
+      success: false,
+      error: `Stellar transaction confirmation failed: ${error?.message}`,
+    };
+  }
 }
 
 
