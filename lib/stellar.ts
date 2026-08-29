@@ -2,6 +2,10 @@
 import crypto from "crypto";
 
 import * as StellarSdk from "stellar-sdk";
+import {
+  StellarTransactionConfirmationService,
+} from "@/lib/transaction-confirmation.service";
+import { appendActivityLog } from "@/lib/activity-logger";
 
 const STELLAR_NETWORK = process.env.NEXT_PUBLIC_STELLAR_NETWORK || "testnet";
 const STELLAR_SECRET_KEY = process.env.STELLAR_SECRET_KEY || "";
@@ -23,6 +27,112 @@ export interface StellarSubmitResult {
   timestamp?: string;
   memo?: string;
   error?: string;
+  /** Added by confirmation flow integration */
+  lifecycle?: string;
+  confirmedAt?: string;
+}
+
+/**
+ * Submit a Stellar transaction with full confirmation lifecycle tracking.
+ *
+ * Uses the StellarTransactionConfirmationService to:
+ *  1. Build/sign/submit the transaction
+ *  2. Poll Horizon until confirmation
+ *  3. Persist the lifecycle (preparing → submitted → confirming → confirmed/failed)
+ *  4. Emit activity log events for auditability
+ */
+export async function submitTransactionWithConfirmation({
+  secretKey,
+  walletAddress,
+  operations,
+  memo,
+  metadata,
+}: {
+  secretKey: string;
+  walletAddress: string;
+  operations: any[];
+  memo?: StellarSdk.Memo;
+  metadata?: Record<string, unknown>;
+}): Promise<StellarSubmitResult> {
+  const key = secretKey || STELLAR_SECRET_KEY;
+
+  if (!key) {
+    const timestamp = new Date().toISOString();
+    const txHash = crypto
+      .createHash("sha256")
+      .update(`${walletAddress}:${timestamp}:${crypto.randomUUID()}`)
+      .digest("hex");
+
+    console.warn(
+      "[Stellar] Transaction confirmation: no secret key configured — using deterministic mock.",
+    );
+
+    return {
+      success: true,
+      transactionHash: txHash,
+      timestamp,
+      lifecycle: "confirmed",
+      confirmedAt: timestamp,
+    };
+  }
+
+  let confirmationService: StellarTransactionConfirmationService | null = null;
+  try {
+    confirmationService = new StellarTransactionConfirmationService();
+    const confirmation = await confirmationService.submitAndConfirm({
+      secretKey: key,
+      walletAddress,
+      operations: operations as StellarSdk.Operation[],
+      memo,
+      metadata,
+    });
+
+    // Emit audit log
+    await appendActivityLog(
+      "snippet.updated",
+      "wallet",
+      {
+        actorWallet: walletAddress,
+        metadata: {
+          txHash: confirmation.stellarTxHash,
+          lifecycle: confirmation.lifecycle,
+          status: confirmation.status,
+          ledger: confirmation.ledger,
+          ...metadata,
+        },
+      },
+    );
+
+    return {
+      success: confirmation.status === "successful",
+      transactionHash: confirmation.stellarTxHash,
+      ledger: confirmation.ledger ?? undefined,
+      timestamp: confirmation.confirmedAt ?? confirmation.createdAt,
+      memo: confirmation.memo ?? undefined,
+      lifecycle: confirmation.lifecycle,
+      confirmedAt: confirmation.confirmedAt ?? undefined,
+      error: confirmation.errorMessage ?? undefined,
+    };
+  } catch (error: any) {
+    console.error("[Stellar] Transaction confirmation failed:", error?.message);
+
+    await appendActivityLog(
+      "snippet.owner_transfer_failed",
+      "wallet",
+      {
+        actorWallet: walletAddress,
+        metadata: {
+          error: error?.message,
+          ...metadata,
+        },
+      },
+    );
+
+    return {
+      success: false,
+      error: `Stellar transaction confirmation failed: ${error?.message}`,
+    };
+  }
 }
 
 
@@ -284,6 +394,55 @@ export async function mintSnippetNFT({
   };
 }
 
+// ─── Error Classification ──────────────────────────────────────────────────
+
+const RETRYABLE_RESULT_CODES = new Set([
+  "tx_bad_seq",
+  "tx_too_late",
+  "tx_no_source_account",
+]);
+
+export function classifyStellarError(error: string): {
+  retryable: boolean;
+  reason: string;
+} {
+  const lower = error.toLowerCase();
+
+  if (lower.includes("timeout") || lower.includes("econnreset") || lower.includes("econnrefused")) {
+    return { retryable: true, reason: "network_timeout" };
+  }
+
+  if (lower.includes("429") || lower.includes("rate limit")) {
+    return { retryable: true, reason: "rate_limited" };
+  }
+
+  if (lower.includes("500") || lower.includes("502") || lower.includes("503")) {
+    return { retryable: true, reason: "horizon_server_error" };
+  }
+
+  if (lower.includes("tx_bad_seq")) {
+    return { retryable: true, reason: "tx_bad_seq" };
+  }
+
+  if (lower.includes("tx_too_late")) {
+    return { retryable: true, reason: "tx_too_late" };
+  }
+
+  if (lower.includes("tx_already_exists")) {
+    return { retryable: false, reason: "tx_already_exists" };
+  }
+
+  if (lower.includes("tx_failed")) {
+    return { retryable: false, reason: "tx_failed" };
+  }
+
+  if (lower.includes("tx_bad_auth")) {
+    return { retryable: false, reason: "tx_bad_auth" };
+  }
+
+  return { retryable: false, reason: "unknown_error" };
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /**
@@ -442,3 +601,82 @@ export async function mintSnippetLicenseOnStellar({
     };
   }
 }
+
+/**
+ * Submit collection anchor to the Stellar blockchain.
+ */
+export async function submitCollectionToStellar(
+  secretKey: string,
+  collectionId: string,
+  ownerWallet: string,
+  title: string,
+  description: string,
+  tags: string[],
+): Promise<{
+  success: boolean;
+  transactionHash?: string;
+  ledger?: number;
+  anchor?: string;
+  error?: string;
+}> {
+  const key = secretKey || STELLAR_SECRET_KEY;
+  const content = `${collectionId}:${ownerWallet}:${title}:${description}:${tags.join(",")}`;
+  const anchor = crypto.createHash("sha256").update(content).digest("hex");
+
+  if (!key) {
+    const txHash = crypto
+      .createHash("sha256")
+      .update(`${anchor}:${new Date().toISOString()}`)
+      .digest("hex");
+
+    console.warn(
+      "[Stellar] Collection anchor: no secret key configured — using deterministic mock.",
+    );
+
+    return {
+      success: true,
+      transactionHash: txHash,
+      ledger: 1,
+      anchor,
+    };
+  }
+
+  try {
+    const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+    const keypair = StellarSdk.Keypair.fromSecret(key);
+    const account = await server.loadAccount(keypair.publicKey());
+
+    const memoText = `col:${anchor.slice(0, 22)}`;
+
+    const transaction = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        StellarSdk.Operation.manageData({
+          name: `col:${anchor.slice(0, 20)}`,
+          value: anchor.slice(0, 64),
+        }),
+      )
+      .addMemo(StellarSdk.Memo.text(memoText))
+      .setTimeout(30)
+      .build();
+
+    transaction.sign(keypair);
+    const response = await server.submitTransaction(transaction);
+
+    return {
+      success: true,
+      transactionHash: response.hash,
+      ledger: response.ledger,
+      anchor,
+    };
+  } catch (error: any) {
+    console.error("[Stellar] Collection anchor failed:", error?.message);
+    return {
+      success: false,
+      error: `Stellar collection anchor failed: ${error?.message}`,
+    };
+  }
+}
+
