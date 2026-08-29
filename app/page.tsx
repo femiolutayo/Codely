@@ -122,6 +122,8 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-white text-slate-900">
 
+      <main id="main-content">
+
       {/* ── Hero ──────────────────────────────────────────────────────────── */}
       <section className="relative overflow-hidden bg-gradient-to-b from-slate-50 via-white to-white pt-20 pb-28">
         {/* Soft decorative blobs */}
@@ -468,6 +470,8 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+
+      </main>
 
       {/* ── Footer ────────────────────────────────────────────────────────── */}
       <footer className="border-t border-slate-100 bg-white">

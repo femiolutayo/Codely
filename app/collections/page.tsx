@@ -169,7 +169,7 @@ export default function CollectionsPage() {
     <div className="flex min-h-screen bg-slate-950 text-slate-100">
       <Sidebar />
 
-      <main className="flex-1 p-6 lg:p-8 overflow-auto">
+      <main id="main-content" className="flex-1 p-6 lg:p-8 overflow-auto">
         <div className="max-w-6xl mx-auto">
           {/* Header */}
           <div className="flex items-center justify-between mb-8">

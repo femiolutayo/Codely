@@ -226,7 +226,7 @@ export default function FavoritesPage() {
     <div className="flex min-h-screen bg-gray-950">
       <Sidebar />
 
-      <main className="flex-1 min-w-0 relative">
+      <main id="main-content" className="flex-1 min-w-0 relative">
         <div className="fixed inset-0 overflow-hidden pointer-events-none">
           <div className="absolute top-20 left-10 w-72 h-72 bg-purple-600 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-glow-pulse" />
           <div className="absolute top-40 right-10 w-72 h-72 bg-blue-600 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-glow-pulse animation-delay-1000" />
