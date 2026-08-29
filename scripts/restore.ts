@@ -7,6 +7,7 @@ async function main() {
   
   const args = process.argv.slice(2);
   
+  
   if (args[0] === 'list') {
     const backups = listBackups();
     console.log('Available backups:');
