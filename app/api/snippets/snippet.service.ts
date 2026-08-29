@@ -7,8 +7,11 @@ import {
 import { createSnippetSchema, updateSnippetSchema } from "./snippet.validator";
 import { appendActivityLog } from "@/lib/activity-logger";
 import { IPFSService } from "@/lib/ipfs.service";
+import { StellarRecoveryService } from "@/lib/stellar-recovery.service";
 
 export class SnippetService {
+  private recoveryService = new StellarRecoveryService();
+
   constructor(private snippetRepository: SnippetRepository) {}
 
   async getAllSnippets(
@@ -71,24 +74,28 @@ export class SnippetService {
         ipfsCid
       });
 
-      // If licenseType is provided, mint it and update the snippet
+      // If licenseType is provided, mint it via recovery service
       if (validatedData.licenseType && validatedData.licenseType !== "None") {
-        const { mintSnippetLicenseOnStellar } = await import("@/lib/stellar");
-        const tx = await mintSnippetLicenseOnStellar({
+        const idempotencyKey = `lic:${snippet.id.slice(0, 8)}:${validatedData.licenseType}`;
+        const record = await this.recoveryService.submitLicenseMint({
+          idempotencyKey,
           snippetId: snippet.id,
           licenseType: validatedData.licenseType,
           ownerWalletAddress: validatedData.ownerWalletAddress,
         });
 
-        if (tx.success && tx.transactionHash) {
+        if (record.status === "confirmed" && record.callback_status === "applied" && record.stellar_tx_hash) {
           snippet = await this.snippetRepository.update(snippet.id, {
-            licenseTransactionHash: tx.transactionHash,
+            licenseTransactionHash: record.stellar_tx_hash,
             licenseMetadata: {
               type: validatedData.licenseType,
-              timestamp: tx.timestamp,
-              memo: tx.memo,
+              memo: `lic:${snippet.id.slice(0, 8)}`,
             }
           } as any);
+        } else if (record.status === "dead") {
+          console.error("[Service] License minting failed permanently for snippet:", snippet.id);
+        } else {
+          console.warn("[Service] License minting queued for retry:", record.status, record.id);
         }
       }
       return snippet;
@@ -128,22 +135,26 @@ export class SnippetService {
         validatedData.licenseType !== "None" &&
         !existing.license_transaction_hash
       ) {
-        const { mintSnippetLicenseOnStellar } = await import("@/lib/stellar");
-        const tx = await mintSnippetLicenseOnStellar({
+        const idempotencyKey = `lic:${id.slice(0, 8)}:${validatedData.licenseType}`;
+        const record = await this.recoveryService.submitLicenseMint({
+          idempotencyKey,
           snippetId: id,
           licenseType: validatedData.licenseType,
           ownerWalletAddress: existing.owner_wallet_address,
         });
 
-        if (tx.success && tx.transactionHash) {
+        if (record.status === "confirmed" && record.callback_status === "applied" && record.stellar_tx_hash) {
           updated = await this.snippetRepository.update(id, {
-            licenseTransactionHash: tx.transactionHash,
+            licenseTransactionHash: record.stellar_tx_hash,
             licenseMetadata: {
               type: validatedData.licenseType,
-              timestamp: tx.timestamp,
-              memo: tx.memo,
+              memo: `lic:${id.slice(0, 8)}`,
             }
           } as any);
+        } else if (record.status === "dead") {
+          console.error("[Service] License minting failed permanently for snippet:", id);
+        } else {
+          console.warn("[Service] License minting queued for retry:", record.status, record.id);
         }
       }
 

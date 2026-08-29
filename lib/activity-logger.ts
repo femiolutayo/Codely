@@ -22,7 +22,12 @@ export type ActivityAction =
   | "wallet.connected"
   | "wallet.disconnected"
   | "signature.verified"
-  | "signature.failed";
+  | "signature.failed"
+  | "stellar.tx.submitted"
+  | "stellar.tx.confirmed"
+  | "stellar.tx.applied"
+  | "stellar.tx.failed"
+  | "stellar.tx.dead";
 
 export interface ActivityLogEntry {
   id: string;

@@ -6,7 +6,7 @@ import { OwnershipMiddleware } from "../../ownership.middleware";
 import { SignatureMiddleware } from "../../signature.middleware";
 import { appendActivityLog, extractUserAgent } from "@/lib/activity-logger";
 import { createTransaction } from "@/lib/db";
-import { submitOwnershipTransferMemoToStellar } from "@/lib/ownership-transfer";
+import { StellarRecoveryService } from "@/lib/stellar-recovery.service";
 
 const transferSchema = z.object({
   newOwnerWalletAddress: z
@@ -18,11 +18,21 @@ const transferSchema = z.object({
 const repository = new SnippetRepository();
 const ownershipMiddleware = new OwnershipMiddleware();
 const signatureMiddleware = new SignatureMiddleware();
+const recoveryService = new StellarRecoveryService();
 
 function getIp(req: NextRequest): string | null {
   return (
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null
   );
+}
+
+function buildIdempotencyKey(
+  snippetId: string,
+  oldOwner: string,
+  newOwner: string,
+): string {
+  const date = new Date().toISOString().slice(0, 10);
+  return `own:${snippetId.slice(0, 8)}:${oldOwner.slice(0, 8)}:${newOwner.slice(0, 8)}:${date}`;
 }
 
 export async function POST(
@@ -61,7 +71,6 @@ export async function POST(
       );
     }
 
-    // Enforce current ownership
     const ownershipResult = await ownershipMiddleware.verifyOwnership(
       id,
       walletAddress,
@@ -71,7 +80,6 @@ export async function POST(
       return ownershipResult.error!;
     }
 
-    // Enforce signature for this critical action
     const signatureResult = await signatureMiddleware.verifySignature(
       req,
       "transfer_ownership",
@@ -81,7 +89,6 @@ export async function POST(
       return signatureResult.error!;
     }
 
-    // Get current owner for audit + atomic guard
     const current = await repository.findById(id);
     if (!current) {
       return NextResponse.json(
@@ -101,86 +108,57 @@ export async function POST(
       );
     }
 
-    // Atomic ownership update (guard by old owner)
-    const updated = await (repository as any).transferOwnershipAtomic?.({
-      snippetId: id,
+    const idempotencyKey = buildIdempotencyKey(
+      id,
       oldOwnerWalletAddress,
       newOwnerWalletAddress,
-    });
+    );
 
-    // Fallback (non-atomic) if repository method doesn't exist in this codebase
-    if (!updated) {
-      // Guard at application level
-      const currentAfter = await repository.findById(id);
-      const currentOwnerAfter = (currentAfter as any)?.owner_wallet_address as
-        | string
-        | null;
-
-      if (
-        !currentOwnerAfter ||
-        currentOwnerAfter.toUpperCase() !== oldOwnerWalletAddress.toUpperCase()
-      ) {
-        return NextResponse.json(
-          {
-            error: "Conflict",
-            message:
-              "Ownership transfer failed. The snippet owner may have changed; retry.",
-          },
-          { status: 409 },
-        );
-      }
-
-      const tmp = await (repository as any).sql`
-        UPDATE snippets
-        SET owner_wallet_address = ${newOwnerWalletAddress},
-            updated_at = ${new Date()}
-        WHERE id = ${id}
-          AND owner_wallet_address = ${oldOwnerWalletAddress}
-        RETURNING *
-      `;
-
-      const row = tmp?.[0] ?? null;
-      if (!row) {
-        return NextResponse.json(
-          {
-            error: "Conflict",
-            message:
-              "Ownership transfer failed. The snippet owner may have changed; retry.",
-          },
-          { status: 409 },
-        );
-      }
-
-      // Replace updated
-      (updated as any) = row;
+    const existing = await recoveryService.getStatusByKey(idempotencyKey);
+    if (existing && existing.status === "confirmed" && existing.callback_status === "applied") {
+      const snippet = await repository.findById(id);
+      return NextResponse.json(snippet, { status: 200 });
     }
 
-    if (!updated) {
+    if (existing && existing.status === "dead") {
       return NextResponse.json(
         {
-          error: "Conflict",
-          message:
-            "Ownership transfer failed. The snippet owner may have changed; retry.",
+          error: "On-chain transfer proof failed permanently",
+          message: existing.last_error || "Stellar transaction failed after max retries",
         },
-        { status: 409 },
+        { status: 502 },
       );
     }
 
-    // On-chain immutable memo/proof
-    const memoResult = await submitOwnershipTransferMemoToStellar({
+    if (existing && (existing.status === "pending" || existing.status === "submitted" || existing.status === "failed")) {
+      return NextResponse.json(
+        {
+          status: "recovering",
+          idempotencyKey,
+          transactionId: existing.id,
+          stellarTxHash: existing.stellar_tx_hash,
+          attemptCount: existing.attempt_count,
+          message: "Transaction is being processed. Poll /transaction-status for updates.",
+        },
+        { status: 202 },
+      );
+    }
+
+    const record = await recoveryService.submitOwnershipTransfer({
+      idempotencyKey,
       snippetId: id,
       oldOwnerWalletAddress,
       newOwnerWalletAddress,
     });
 
-    if (!memoResult.success || !memoResult.transactionHash) {
+    if (record.status === "dead") {
       await appendActivityLog("snippet.owner_transfer_failed", "snippet", {
         actorWallet: walletAddress,
         resourceId: id,
         metadata: {
           oldOwnerWalletAddress,
           newOwnerWalletAddress,
-          stellarError: memoResult.error || "Unknown error",
+          stellarError: record.last_error || "Unknown error",
         },
         ipAddress: getIp(req),
         userAgent: extractUserAgent(req.headers),
@@ -189,45 +167,89 @@ export async function POST(
       return NextResponse.json(
         {
           error: "On-chain transfer proof failed",
-          message: memoResult.error || "Stellar transaction failed",
+          message: record.last_error || "Stellar transaction failed permanently",
         },
         { status: 502 },
       );
     }
 
-    // Record app transaction (internal)
-    try {
-      await createTransaction(
-        walletAddress,
-        "snippet_owner_transfer",
-        `Transferred snippet ${id} ownership`,
+    if (record.status === "pending" || record.status === "failed") {
+      return NextResponse.json(
         {
-          snippetId: id,
-          oldOwnerWalletAddress,
-          newOwnerWalletAddress,
-          stellarTransactionHash: memoResult.transactionHash,
+          status: "recovering",
+          idempotencyKey,
+          transactionId: record.id,
+          attemptCount: record.attempt_count,
+          message: "Transaction submission queued for retry. Poll /transaction-status for updates.",
         },
+        { status: 202 },
       );
-    } catch (err) {
-      console.error("[transactions] Failed to log snippet_owner_transfer:", err);
     }
 
-    // Success audit log
-    await appendActivityLog("snippet.owner_transfer", "snippet", {
-      actorWallet: walletAddress,
-      resourceId: id,
-      metadata: {
-        oldOwnerWalletAddress,
-        newOwnerWalletAddress,
-        transactionHash: memoResult.transactionHash,
-        memo: memoResult.memo,
-      },
-      ipAddress: getIp(req),
-      userAgent: extractUserAgent(req.headers),
-    });
+    if (record.status === "submitted" && !record.stellar_tx_hash) {
+      return NextResponse.json(
+        {
+          status: "recovering",
+          idempotencyKey,
+          transactionId: record.id,
+          message: "Transaction submitted, awaiting confirmation. Poll /transaction-status for updates.",
+        },
+        { status: 202 },
+      );
+    }
 
-    await logEvent("ownership_transferred", walletAddress, id, `Transferred to ${newOwnerWalletAddress}`);
-    return NextResponse.json(updated, { status: 200 });
+    if (record.status === "confirmed" || (record.status === "submitted" && record.stellar_tx_hash)) {
+      if (record.callback_status !== "applied") {
+        return NextResponse.json(
+          {
+            status: "recovering",
+            idempotencyKey,
+            transactionId: record.id,
+            stellarTxHash: record.stellar_tx_hash,
+            message: "Transaction confirmed on-chain. Awaiting database update. Poll /transaction-status.",
+          },
+          { status: 202 },
+        );
+      }
+
+      try {
+        await createTransaction(
+          walletAddress,
+          "snippet_owner_transfer",
+          `Transferred snippet ${id} ownership`,
+          {
+            snippetId: id,
+            oldOwnerWalletAddress,
+            newOwnerWalletAddress,
+            stellarTransactionHash: record.stellar_tx_hash,
+          },
+        );
+      } catch (err) {
+        console.error("[transactions] Failed to log snippet_owner_transfer:", err);
+      }
+
+      await appendActivityLog("snippet.owner_transfer", "snippet", {
+        actorWallet: walletAddress,
+        resourceId: id,
+        metadata: {
+          oldOwnerWalletAddress,
+          newOwnerWalletAddress,
+          transactionHash: record.stellar_tx_hash,
+        },
+        ipAddress: getIp(req),
+        userAgent: extractUserAgent(req.headers),
+      });
+
+      await logEvent("ownership_transferred", walletAddress, id, `Transferred to ${newOwnerWalletAddress}`);
+
+      const updatedSnippet = await repository.findById(id);
+      return NextResponse.json(updatedSnippet, { status: 200 });
+    }
+
+    return NextResponse.json(
+      { error: "Unexpected transaction state", message: `Status: ${record.status}` },
+      { status: 500 },
+    );
   } catch (error) {
     console.error("[OwnershipTransfer] POST error:", error);
     return NextResponse.json(
@@ -238,4 +260,3 @@ export async function POST(
     );
   }
 }
-

@@ -394,6 +394,55 @@ export async function mintSnippetNFT({
   };
 }
 
+// ─── Error Classification ──────────────────────────────────────────────────
+
+const RETRYABLE_RESULT_CODES = new Set([
+  "tx_bad_seq",
+  "tx_too_late",
+  "tx_no_source_account",
+]);
+
+export function classifyStellarError(error: string): {
+  retryable: boolean;
+  reason: string;
+} {
+  const lower = error.toLowerCase();
+
+  if (lower.includes("timeout") || lower.includes("econnreset") || lower.includes("econnrefused")) {
+    return { retryable: true, reason: "network_timeout" };
+  }
+
+  if (lower.includes("429") || lower.includes("rate limit")) {
+    return { retryable: true, reason: "rate_limited" };
+  }
+
+  if (lower.includes("500") || lower.includes("502") || lower.includes("503")) {
+    return { retryable: true, reason: "horizon_server_error" };
+  }
+
+  if (lower.includes("tx_bad_seq")) {
+    return { retryable: true, reason: "tx_bad_seq" };
+  }
+
+  if (lower.includes("tx_too_late")) {
+    return { retryable: true, reason: "tx_too_late" };
+  }
+
+  if (lower.includes("tx_already_exists")) {
+    return { retryable: false, reason: "tx_already_exists" };
+  }
+
+  if (lower.includes("tx_failed")) {
+    return { retryable: false, reason: "tx_failed" };
+  }
+
+  if (lower.includes("tx_bad_auth")) {
+    return { retryable: false, reason: "tx_bad_auth" };
+  }
+
+  return { retryable: false, reason: "unknown_error" };
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /**
