@@ -552,3 +552,82 @@ export async function mintSnippetLicenseOnStellar({
     };
   }
 }
+
+/**
+ * Submit collection anchor to the Stellar blockchain.
+ */
+export async function submitCollectionToStellar(
+  secretKey: string,
+  collectionId: string,
+  ownerWallet: string,
+  title: string,
+  description: string,
+  tags: string[],
+): Promise<{
+  success: boolean;
+  transactionHash?: string;
+  ledger?: number;
+  anchor?: string;
+  error?: string;
+}> {
+  const key = secretKey || STELLAR_SECRET_KEY;
+  const content = `${collectionId}:${ownerWallet}:${title}:${description}:${tags.join(",")}`;
+  const anchor = crypto.createHash("sha256").update(content).digest("hex");
+
+  if (!key) {
+    const txHash = crypto
+      .createHash("sha256")
+      .update(`${anchor}:${new Date().toISOString()}`)
+      .digest("hex");
+
+    console.warn(
+      "[Stellar] Collection anchor: no secret key configured — using deterministic mock.",
+    );
+
+    return {
+      success: true,
+      transactionHash: txHash,
+      ledger: 1,
+      anchor,
+    };
+  }
+
+  try {
+    const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+    const keypair = StellarSdk.Keypair.fromSecret(key);
+    const account = await server.loadAccount(keypair.publicKey());
+
+    const memoText = `col:${anchor.slice(0, 22)}`;
+
+    const transaction = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        StellarSdk.Operation.manageData({
+          name: `col:${anchor.slice(0, 20)}`,
+          value: anchor.slice(0, 64),
+        }),
+      )
+      .addMemo(StellarSdk.Memo.text(memoText))
+      .setTimeout(30)
+      .build();
+
+    transaction.sign(keypair);
+    const response = await server.submitTransaction(transaction);
+
+    return {
+      success: true,
+      transactionHash: response.hash,
+      ledger: response.ledger,
+      anchor,
+    };
+  } catch (error: any) {
+    console.error("[Stellar] Collection anchor failed:", error?.message);
+    return {
+      success: false,
+      error: `Stellar collection anchor failed: ${error?.message}`,
+    };
+  }
+}
+

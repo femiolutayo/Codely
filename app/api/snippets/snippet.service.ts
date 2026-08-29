@@ -158,6 +158,180 @@ export class SnippetService {
   }
 
   /**
+   * Duplicate a snippet (creates an identical copy in the user's collection)
+   */
+  async duplicateSnippet(
+    snippetId: string,
+    userWalletAddress: string,
+    titleOverride?: string,
+  ) {
+    try {
+      const original = await this.snippetRepository.findById(snippetId);
+      if (!original) {
+        throw new Error("Snippet not found");
+      }
+
+      const title = titleOverride?.trim() || `${original.title} (Copy)`;
+      const tags = Array.isArray(original.tags)
+        ? original.tags
+        : (typeof original.tags === "string" ? JSON.parse(original.tags) : []);
+
+      let ipfsCid = original.ipfs_cid;
+      try {
+        ipfsCid = await IPFSService.uploadToIPFS(original.code);
+      } catch (ipfsErr) {
+        console.warn("[Service] Non-critical IPFS upload failure on duplicate:", ipfsErr);
+      }
+
+      const duplicate = await this.snippetRepository.create({
+        title,
+        description: original.description || "",
+        code: original.code,
+        language: original.language,
+        tags: tags.length > 0 ? tags : ["snippet"],
+        ownerWalletAddress: userWalletAddress,
+        forkedFromId: original.id,
+        isFork: false,
+        ipfsCid,
+      });
+
+      await appendActivityLog("snippet.duplicated", "snippet", {
+        actorWallet: userWalletAddress,
+        resourceId: duplicate.id,
+        metadata: {
+          originSnippetId: original.id,
+          originTitle: original.title,
+          title: duplicate.title,
+          language: duplicate.language,
+        },
+      });
+
+      return duplicate;
+    } catch (error) {
+      if (error instanceof Error && error.message === "Snippet not found") {
+        throw error;
+      }
+      console.error("[Service] Error duplicating snippet:", error);
+      throw new Error("Failed to duplicate snippet");
+    }
+  }
+
+  /**
+   * Fork a snippet (creates a derived snippet with editable content)
+   */
+  async forkSnippet(
+    snippetId: string,
+    userWalletAddress: string,
+    data?: unknown,
+  ) {
+    try {
+      const original = await this.snippetRepository.findById(snippetId);
+      if (!original) {
+        throw new Error("Snippet not found");
+      }
+
+      const validatedData = data ? (await import("./snippet.validator")).forkSnippetSchema.parse(data) : {};
+
+      const originalTags = Array.isArray(original.tags)
+        ? original.tags
+        : (typeof original.tags === "string" ? JSON.parse(original.tags) : []);
+
+      const title = validatedData.title?.trim() || `Fork of ${original.title}`;
+      const description = validatedData.description !== undefined ? validatedData.description : (original.description || "");
+      const code = validatedData.code !== undefined ? validatedData.code : original.code;
+      const language = validatedData.language !== undefined ? validatedData.language : original.language;
+      const tags = validatedData.tags && validatedData.tags.length > 0 ? validatedData.tags : (originalTags.length > 0 ? originalTags : ["fork"]);
+
+      let ipfsCid = original.ipfs_cid;
+      try {
+        ipfsCid = await IPFSService.uploadToIPFS(code);
+      } catch (ipfsErr) {
+        console.warn("[Service] Non-critical IPFS upload failure on fork:", ipfsErr);
+      }
+
+      let forked = await this.snippetRepository.create({
+        title,
+        description,
+        code,
+        language,
+        tags,
+        ownerWalletAddress: userWalletAddress,
+        forkedFromId: original.id,
+        isFork: true,
+        licenseType: validatedData.licenseType,
+        ipfsCid,
+      });
+
+      if (validatedData.licenseType && validatedData.licenseType !== "None") {
+        try {
+          const { mintSnippetLicenseOnStellar } = await import("@/lib/stellar");
+          const tx = await mintSnippetLicenseOnStellar({
+            snippetId: forked.id,
+            licenseType: validatedData.licenseType,
+            ownerWalletAddress: userWalletAddress,
+          });
+
+          if (tx.success && tx.transactionHash) {
+            forked = await this.snippetRepository.update(forked.id, {
+              licenseTransactionHash: tx.transactionHash,
+              licenseMetadata: {
+                type: validatedData.licenseType,
+                timestamp: tx.timestamp,
+                memo: tx.memo,
+              }
+            } as any);
+          }
+        } catch (err) {
+          console.error("[Service] License minting for fork failed:", err);
+        }
+      }
+
+      await appendActivityLog("snippet.forked", "snippet", {
+        actorWallet: userWalletAddress,
+        resourceId: forked.id,
+        metadata: {
+          originSnippetId: original.id,
+          originTitle: original.title,
+          title: forked.title,
+          language: forked.language,
+        },
+      });
+
+      return forked;
+    } catch (error) {
+      if (error instanceof Error && error.message === "Snippet not found") {
+        throw error;
+      }
+      console.error("[Service] Error forking snippet:", error);
+      throw error instanceof Error ? error : new Error("Failed to fork snippet");
+    }
+  }
+
+  /**
+   * Get all snippets derived/forked from a snippet
+   */
+  async getSnippetForks(snippetId: string) {
+    try {
+      return await this.snippetRepository.findForksBySnippetId(snippetId);
+    } catch (error) {
+      console.error("[Service] Error fetching snippet forks:", error);
+      throw new Error("Failed to fetch snippet forks");
+    }
+  }
+
+  /**
+   * Get origin/parent snippet of a forked snippet
+   */
+  async getSnippetOrigin(snippetId: string) {
+    try {
+      return await this.snippetRepository.findOriginSnippet(snippetId);
+    } catch (error) {
+      console.error("[Service] Error fetching snippet origin:", error);
+      throw new Error("Failed to fetch snippet origin");
+    }
+  }
+
+  /**
    * Soft delete a snippet (marks as deleted, preserves data)
    */
   async deleteSnippet(id: string, userWalletAddress: string | null = null) {
