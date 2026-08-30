@@ -15,12 +15,19 @@ export type ActivityAction =
   | "snippet.deleted"
   | "snippet.soft_deleted"
   | "snippet.restored"
+  | "snippet.forked"
+  | "snippet.duplicated"
   | "snippet.owner_transfer"
   | "snippet.owner_transfer_failed"
   | "wallet.connected"
   | "wallet.disconnected"
   | "signature.verified"
-  | "signature.failed";
+  | "signature.failed"
+  | "stellar.tx.submitted"
+  | "stellar.tx.confirmed"
+  | "stellar.tx.applied"
+  | "stellar.tx.failed"
+  | "stellar.tx.dead";
 
 export interface ActivityLogEntry {
   id: string;

@@ -86,106 +86,45 @@ export const licenseTypeSchema = z
 // ---------------------------------------------------------------------------
 
 export const createSnippetSchema = z.object({
-  title: titleSchema,
-  description: descriptionSchema,
-  code: codeSchema,
-  language: languageSchema,
-  tags: tagsSchema.min(1, "At least one tag is required"),
-  ownerWalletAddress: walletAddressSchema,
-  licenseType: licenseTypeSchema,
-  visibility: visibilitySchema.default("private"),
+  title: z.string().min(1, "Title is required"),
+  description: z.string().min(1, "Description is required"),
+  code: z.string().min(1, "Code is required"),
+  language: z.string().min(1, "Language is required"),
+  tags: z.array(z.string()).min(1, "At least one tag is required"),
+  ownerWalletAddress: z.string().min(1, "Owner wallet address is required"),
+  licenseType: z.string().optional(),
+  forkedFromId: z.string().uuid("Invalid origin snippet UUID").nullable().optional(),
+  isFork: z.boolean().optional(),
 });
 
-export const updateSnippetSchema = z
-  .object({
-    title: titleSchema.optional(),
-    description: descriptionSchema.optional(),
-    code: codeSchema.optional(),
-    language: languageSchema.optional(),
-    tags: tagsSchema.min(1, "At least one tag is required").optional(),
-    licenseType: licenseTypeSchema,
-    visibility: visibilitySchema.optional(),
-  })
-  .strict()
-  .refine((value) => Object.keys(value).length > 0, {
-    message: "At least one field must be provided to update a snippet",
-  });
+export const updateSnippetSchema = z.object({
+  title: z.string().min(1, "Title is required").optional(),
+  description: z.string().min(1, "Description is required").optional(),
+  code: z.string().min(1, "Code is required").optional(),
+  language: z.string().min(1, "Language is required").optional(),
+  tags: z.array(z.string()).min(1, "At least one tag is required").optional(),
+  licenseType: z.string().optional(),
+  forkedFromId: z.string().uuid("Invalid origin snippet UUID").nullable().optional(),
+  isFork: z.boolean().optional(),
+});
 
-/**
- * Imported snippets use the exact same field rules as creation, but the owner
- * is always taken from the authenticated wallet (never accepted from the file)
- * and unknown keys are rejected so a malicious payload cannot smuggle extra
- * fields into persistence.
- */
-export const importSnippetSchema = createSnippetSchema
-  .omit({ ownerWalletAddress: true })
-  .strict();
+export const forkSnippetSchema = z.object({
+  title: z.string().min(1, "Title is required").optional(),
+  description: z.string().optional(),
+  code: z.string().min(1, "Code is required").optional(),
+  language: z.string().min(1, "Language is required").optional(),
+  tags: z.array(z.string()).optional(),
+  licenseType: z.string().optional(),
+  ownerWalletAddress: z.string().optional(),
+});
 
-export const shareSnippetSchema = z.object({
-  isReadOnly: z.boolean().optional(),
-  expiresAt: z
-    .string()
-    .optional()
-    .refine(
-      (value) => value === undefined || !Number.isNaN(Date.parse(value)),
-      "expiresAt must be a valid date string",
-    ),
+export const duplicateSnippetSchema = z.object({
+  title: z.string().min(1, "Title is required").optional(),
+  ownerWalletAddress: z.string().optional(),
 });
 
 export type CreateSnippetDTO = z.infer<typeof createSnippetSchema>;
 export type UpdateSnippetDTO = z.infer<typeof updateSnippetSchema>;
-export type ImportSnippetDTO = z.infer<typeof importSnippetSchema>;
-export type ShareSnippetDTO = z.infer<typeof shareSnippetSchema>;
+export type ForkSnippetDTO = z.infer<typeof forkSnippetSchema>;
+export type DuplicateSnippetDTO = z.infer<typeof duplicateSnippetSchema>;
 
-// ---------------------------------------------------------------------------
-// Standardized validation error format
-// ---------------------------------------------------------------------------
-
-export interface ValidationErrorDetail {
-  field: string;
-  message: string;
-}
-
-export interface ValidationErrorBody {
-  error: "Validation failed";
-  message: string;
-  details: ValidationErrorDetail[];
-}
-
-/**
- * Convert a ZodError into the single consistent error payload used by every
- * snippet endpoint. Only safe, human-readable information is exposed — never
- * stack traces, database errors, or internal details.
- */
-export function validationErrorBody(
-  error: z.ZodError,
-  fieldPrefix = "",
-): ValidationErrorBody {
-  const details: ValidationErrorDetail[] = error.issues.map((issue) => ({
-    field: fieldPrefix
-      ? `${fieldPrefix}.${issue.path.join(".") || "body"}`
-      : issue.path.join(".") || "body",
-    message: issue.message,
-  }));
-
-  return {
-    error: "Validation failed",
-    message: details[0]?.message ?? "Request validation failed",
-    details,
-  };
-}
-
-/**
- * Build the same consistent validation payload for failures that are not
- * ZodErrors (e.g. unparseable JSON bodies or invalid ZIP archives).
- */
-export function validationFailureBody(
-  message: string,
-  field = "body",
-): ValidationErrorBody {
-  return {
-    error: "Validation failed",
-    message,
-    details: [{ field, message }],
-  };
-}

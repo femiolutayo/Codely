@@ -166,10 +166,24 @@ export class SnippetRepository {
   async create(data: CreateSnippetDTO & { licenseTransactionHash?: string; licenseMetadata?: any; ipfsCid?: string }) {
     const id = crypto.randomUUID();
     const createdAt = new Date();
+    const forkedFromId = data.forkedFromId || null;
+    const isFork = Boolean(data.isFork);
 
     const result = await this.sql`
-      INSERT INTO snippets (id, title, description, code, language, tags, owner_wallet_address, license_type, license_transaction_hash, license_metadata, ipfs_cid, visibility, created_at, updated_at) 
-      VALUES (${id}, ${data.title}, ${data.description}, ${data.code}, ${data.language}, ${data.tags}, ${data.ownerWalletAddress}, ${data.licenseType || null}, ${data.licenseTransactionHash || null}, ${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, ${data.ipfsCid || null}, ${data.visibility || "private"}, ${createdAt}, ${createdAt}) 
+      INSERT INTO snippets (
+        id, title, description, code, language, tags, owner_wallet_address,
+        forked_from_id, is_fork,
+        license_type, license_transaction_hash, license_metadata, ipfs_cid,
+        created_at, updated_at
+      ) 
+      VALUES (
+        ${id}, ${data.title}, ${data.description}, ${data.code}, ${data.language},
+        ${data.tags}, ${data.ownerWalletAddress},
+        ${forkedFromId}, ${isFork},
+        ${data.licenseType || null}, ${data.licenseTransactionHash || null},
+        ${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null},
+        ${data.ipfsCid || null}, ${createdAt}, ${createdAt}
+      ) 
       RETURNING *
     `;
     await logEvent("snippet_created", data.ownerWalletAddress, id, data.title);
@@ -179,39 +193,8 @@ export class SnippetRepository {
   async update(id: string, data: UpdateSnippetDTO & { licenseTransactionHash?: string; licenseMetadata?: any; ipfsCid?: string }) {
     const updatedAt = new Date();
 
-    // Build dynamic update query using tagged template
-    const updates: string[] = [];
-    const values: any[] = [];
-
-    if (data.title !== undefined) {
-      updates.push("title = ${value}");
-      values.push(data.title);
-    }
-    if (data.description !== undefined) {
-      updates.push("description = ${value}");
-      values.push(data.description);
-    }
-    if (data.code !== undefined) {
-      updates.push("code = ${value}");
-      values.push(data.code);
-    }
-    if (data.language !== undefined) {
-      updates.push("language = ${value}");
-      values.push(data.language);
-    }
-    if (data.tags !== undefined) {
-      updates.push("tags = ${value}");
-      values.push(data.tags);
-    }
-
-    if (data.ipfsCid !== undefined) {
-      updates.push("ipfs_cid = ${value}");
-      values.push(data.ipfsCid);
-    }
-
-    if (updates.length === 0 && !data.licenseType && !data.licenseTransactionHash && data.visibility === undefined) {
-      return this.findById(id);
-    }
+    const forkedFromId = data.forkedFromId !== undefined ? data.forkedFromId : null;
+    const isFork = data.isFork !== undefined ? data.isFork : null;
 
     // Use raw SQL for dynamic updates
     const result = await this.sql`
@@ -221,6 +204,8 @@ export class SnippetRepository {
           code = COALESCE(${data.code}, code),
           language = COALESCE(${data.language}, language),
           tags = COALESCE(${data.tags}, tags),
+          forked_from_id = COALESCE(${forkedFromId}, forked_from_id),
+          is_fork = COALESCE(${isFork}, is_fork),
           license_type = COALESCE(${data.licenseType || null}, license_type),
           license_transaction_hash = COALESCE(${data.licenseTransactionHash || null}, license_transaction_hash),
           license_metadata = COALESCE(${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, license_metadata),
@@ -232,6 +217,30 @@ export class SnippetRepository {
     `;
     if (result[0]) await logEvent("snippet_updated", result[0].owner_wallet_address, id, "Snippet updated");
     return result[0] || null;
+  }
+
+  /**
+   * Find all snippets forked/derived from a specific snippet ID
+   */
+  async findForksBySnippetId(snippetId: string) {
+    const result = await this.sql`
+      SELECT * FROM snippets
+      WHERE forked_from_id = ${snippetId} AND is_deleted = false
+      ORDER BY created_at DESC
+    `;
+    return result as any[];
+  }
+
+  /**
+   * Find origin/parent snippet of a forked snippet
+   */
+  async findOriginSnippet(forkedSnippetId: string) {
+    const child = await this.findById(forkedSnippetId);
+    if (!child || !child.forked_from_id) {
+      return null;
+    }
+    const origin = await this.findById(child.forked_from_id);
+    return origin;
   }
 
   async delete(id: string) {

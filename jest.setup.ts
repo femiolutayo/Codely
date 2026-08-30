@@ -1,25 +1,36 @@
-/**
- * Test environment polyfills.
- *
- * Newer jest-environment-jsdom versions do not expose Node's TextEncoder /
- * TextDecoder globals, which some server libraries (e.g.
- * @neondatabase/serverless) require at import time. These polyfills keep the
- * test environment compatible with those libraries.
- */
-const { TextDecoder, TextEncoder } = require("util");
+import { TextEncoder, TextDecoder } from "util";
 
-if (typeof globalThis.TextDecoder === "undefined") {
-  Object.defineProperty(globalThis, "TextDecoder", {
-    value: TextDecoder,
-    writable: true,
-    configurable: true,
-  });
+// Polyfill TextEncoder and TextDecoder in jsdom test environment
+if (typeof global.TextEncoder === "undefined") {
+  global.TextEncoder = TextEncoder;
+}
+if (typeof global.TextDecoder === "undefined") {
+  (global as any).TextDecoder = TextDecoder;
 }
 
-if (typeof globalThis.TextEncoder === "undefined") {
-  Object.defineProperty(globalThis, "TextEncoder", {
-    value: TextEncoder,
-    writable: true,
-    configurable: true,
-  });
+// Polyfill fetch and Response if missing
+if (typeof global.fetch === "undefined") {
+  global.fetch = jest.fn() as any;
 }
+if (typeof global.Response === "undefined") {
+  (global as any).Response = class Response {
+    body: any;
+    status: number;
+    ok: boolean;
+    constructor(body?: any, init?: any) {
+      this.body = body;
+      this.status = init?.status || 200;
+      this.ok = this.status >= 200 && this.status < 300;
+    }
+    async json() {
+      return typeof this.body === "string" ? JSON.parse(this.body) : this.body;
+    }
+    async text() {
+      return typeof this.body === "string" ? this.body : JSON.stringify(this.body);
+    }
+  };
+}
+
+// Dummy environment variable for tests
+process.env.DATABASE_URL =
+  process.env.DATABASE_URL || "postgres://dummy:dummy@localhost:5432/dummy";
