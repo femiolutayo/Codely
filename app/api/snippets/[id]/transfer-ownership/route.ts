@@ -108,6 +108,9 @@ export async function POST(
       );
     }
 
+    // Atomic ownership update (guard by old owner)
+    let updated = await (repository as any).transferOwnershipAtomic?.({
+      snippetId: id,
     const idempotencyKey = buildIdempotencyKey(
       id,
       oldOwnerWalletAddress,
