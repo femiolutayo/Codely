@@ -49,7 +49,14 @@ const mockRepository = {
   permanentlyDelete: jest.fn(),
   duplicateSnippet: jest.fn(),
   forkSnippet: jest.fn(),
+  findForksBySnippetId: jest.fn(),
+  findOriginSnippet: jest.fn(),
 } as unknown as SnippetRepository;
+
+const historyMockRepository = mockRepository as unknown as {
+  findForksBySnippetId: jest.Mock;
+  findOriginSnippet: jest.Mock;
+};
 
 let consoleSpy: jest.SpyInstance;
 beforeAll(() => {
@@ -212,6 +219,35 @@ describe("SnippetService - Fork & Duplicate", () => {
         MOCK_WALLET,
         undefined,
       );
+    });
+  });
+
+  describe("Requirement 6: History Tracking & Traceability", () => {
+    it("fetches all forks derived from a snippet", async () => {
+      const mockForks = [
+        { id: "fork-1", title: "Fork A", forked_from_id: "root-1", is_fork: true },
+        { id: "fork-2", title: "Fork B", forked_from_id: "root-1", is_fork: true },
+      ];
+
+      historyMockRepository.findForksBySnippetId.mockResolvedValue(mockForks);
+
+      const forks = await service.getSnippetForks("root-1");
+      expect(forks).toEqual(mockForks);
+      expect(historyMockRepository.findForksBySnippetId).toHaveBeenCalledWith("root-1");
+    });
+
+    it("fetches origin snippet for a forked snippet", async () => {
+      const originalSnippet = {
+        id: "root-1",
+        title: "Root Template",
+        language: "python",
+      };
+
+      historyMockRepository.findOriginSnippet.mockResolvedValue(originalSnippet);
+
+      const origin = await service.getSnippetOrigin("fork-1");
+      expect(origin).toEqual(originalSnippet);
+      expect(historyMockRepository.findOriginSnippet).toHaveBeenCalledWith("fork-1");
     });
   });
 });

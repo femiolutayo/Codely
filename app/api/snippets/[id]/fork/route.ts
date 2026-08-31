@@ -4,6 +4,7 @@ import { SnippetService } from "../../snippet.service";
 import { SnippetRepository } from "../../snippet.repository";
 import { OwnershipMiddleware } from "../../ownership.middleware";
 import { appendActivityLog, extractIp, extractUserAgent } from "@/lib/activity-logger";
+import { createTransaction } from "@/lib/db";
 
 const repository = new SnippetRepository();
 const service = new SnippetService(repository);
@@ -15,19 +16,24 @@ export async function POST(
   try {
     const { id } = await params;
 
-    const walletAddress = await OwnershipMiddleware.extractWalletAddress(req);
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      // Empty body allows quick fork with defaults
+    }
+
+    // Extract wallet address
+    let walletAddress = await OwnershipMiddleware.extractWalletAddress(req);
+    if (!walletAddress && body.ownerWalletAddress) {
+      walletAddress = body.ownerWalletAddress;
+    }
+
     if (!walletAddress) {
       return NextResponse.json(
         { error: "Unauthorized", message: "Wallet address is required." },
         { status: 401 },
       );
-    }
-
-    let body = {};
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
     }
 
     const fork = await service.forkSnippet(id, walletAddress, body);
@@ -43,6 +49,18 @@ export async function POST(
       ipAddress: extractIp(req.headers),
       userAgent: extractUserAgent(req.headers),
     });
+
+    // Record on-chain / database transaction
+    try {
+      await createTransaction(
+        walletAddress,
+        "snippet_fork",
+        `Forked snippet ${id} -> ${fork.id}`,
+        { originalSnippetId: id, forkedSnippetId: fork.id },
+      );
+    } catch (txErr) {
+      console.warn("[API] Failed to record transaction for snippet_fork:", txErr);
+    }
 
     return NextResponse.json(fork, { status: 201 });
   } catch (error) {
@@ -64,11 +82,12 @@ export async function POST(
         { status: 400 },
       );
     }
+    if (error instanceof Error && error.message === "Snippet not found") {
+      return NextResponse.json({ error: "Original snippet not found" }, { status: 404 });
+    }
     console.error("[API] Error forking snippet:", error);
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to fork snippet",
-      },
+      { error: error instanceof Error ? error.message : "Failed to fork snippet" },
       { status: 500 },
     );
   }
