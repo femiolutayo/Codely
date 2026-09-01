@@ -89,10 +89,11 @@ export const createSnippetSchema = z.object({
   title: z.string().min(1, "Title is required"),
   description: z.string().min(1, "Description is required"),
   code: z.string().min(1, "Code is required"),
-  language: z.string().min(1, "Language is required"),
+  language: languageSchema,
   tags: z.array(z.string()).min(1, "At least one tag is required"),
-  ownerWalletAddress: z.string().min(1, "Owner wallet address is required"),
+  ownerWalletAddress: walletAddressSchema,
   licenseType: z.string().optional(),
+  visibility: visibilitySchema.optional(),
   forkedFromId: z.string().uuid("Invalid origin snippet UUID").nullable().optional(),
   isFork: z.boolean().optional(),
 });
