@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SnippetRepository } from "../../snippet.repository";
-import { SnippetService } from "../../snippet.service";
-import { OwnershipMiddleware } from "../../ownership.middleware";
-import { createTransaction } from "@/lib/db";
 import { ZodError } from "zod";
+import { SnippetService } from "../../snippet.service";
+import { SnippetRepository } from "../../snippet.repository";
+import { OwnershipMiddleware } from "../../ownership.middleware";
+import { appendActivityLog, extractIp, extractUserAgent } from "@/lib/activity-logger";
+import { createTransaction } from "@/lib/db";
 
 const repository = new SnippetRepository();
 const service = new SnippetService(repository);
@@ -30,33 +31,54 @@ export async function POST(
 
     if (!walletAddress) {
       return NextResponse.json(
-        {
-          error: "Unauthorized",
-          message: "A connected wallet address is required to fork a snippet.",
-        },
+        { error: "Unauthorized", message: "Wallet address is required." },
         { status: 401 },
       );
     }
 
-    const forked = await service.forkSnippet(id, walletAddress, body);
+    const fork = await service.forkSnippet(id, walletAddress, body);
+
+    await appendActivityLog("snippet.forked", "snippet", {
+      actorWallet: walletAddress,
+      resourceId: fork.id,
+      metadata: {
+        originalSnippetId: id,
+        title: fork.title,
+        language: fork.language,
+      },
+      ipAddress: extractIp(req.headers),
+      userAgent: extractUserAgent(req.headers),
+    });
 
     // Record on-chain / database transaction
     try {
       await createTransaction(
         walletAddress,
         "snippet_fork",
-        `Forked snippet ${id} -> ${forked.id}`,
-        { originalSnippetId: id, forkedSnippetId: forked.id },
+        `Forked snippet ${id} -> ${fork.id}`,
+        { originalSnippetId: id, forkedSnippetId: fork.id },
       );
     } catch (txErr) {
       console.warn("[API] Failed to record transaction for snippet_fork:", txErr);
     }
 
-    return NextResponse.json(forked, { status: 201 });
+    return NextResponse.json(fork, { status: 201 });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json(
         { error: "Validation failed", details: error.errors },
+        { status: 400 },
+      );
+    }
+    if (error instanceof Error && error.message === "Source snippet not found") {
+      return NextResponse.json(
+        { error: "Source snippet not found" },
+        { status: 404 },
+      );
+    }
+    if (error instanceof Error && error.message === "Cannot fork your own snippet") {
+      return NextResponse.json(
+        { error: "Cannot fork your own snippet" },
         { status: 400 },
       );
     }

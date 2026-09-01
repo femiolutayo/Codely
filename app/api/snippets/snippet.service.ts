@@ -4,7 +4,7 @@ import {
   PaginatedResult,
   SearchSnippetsOptions,
 } from "./snippet.repository";
-import { createSnippetSchema, updateSnippetSchema } from "./snippet.validator";
+import { createSnippetSchema, updateSnippetSchema, forkDuplicateSchema } from "./snippet.validator";
 import { appendActivityLog } from "@/lib/activity-logger";
 import { IPFSService } from "@/lib/ipfs.service";
 import { StellarRecoveryService } from "@/lib/stellar-recovery.service";
@@ -463,6 +463,122 @@ export class SnippetService {
       throw error instanceof Error
         ? error
         : new Error("Failed to permanently delete snippet");
+    }
+  }
+
+  /**
+   * Duplicate a snippet: create an identical copy in the requesting user's collection.
+   * Preserves metadata (title, tags, language) and sets originalSnippetId for traceability.
+   */
+  async duplicateSnippet(
+    sourceId: string,
+    requestingUserWalletAddress: string,
+    data?: unknown,
+  ) {
+    try {
+      const source = await this.snippetRepository.findById(sourceId);
+      if (!source) {
+        throw new Error("Source snippet not found");
+      }
+
+      if (source.owner_wallet_address === requestingUserWalletAddress) {
+        throw new Error("Cannot duplicate your own snippet");
+      }
+
+      const overrides = data ? forkDuplicateSchema.parse(data) : undefined;
+
+      const duplicate = await this.snippetRepository.duplicateSnippet(
+        sourceId,
+        requestingUserWalletAddress,
+        overrides,
+      );
+
+      if (!duplicate) {
+        throw new Error("Failed to create duplicate snippet");
+      }
+
+      await appendActivityLog("snippet.duplicated", "snippet", {
+        actorWallet: requestingUserWalletAddress,
+        resourceId: duplicate.id,
+        metadata: {
+          originalSnippetId: sourceId,
+          title: duplicate.title,
+          language: duplicate.language,
+          duplicatedAt: new Date().toISOString(),
+        },
+      });
+
+      return duplicate;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message === "Source snippet not found" ||
+          error.message === "Cannot duplicate your own snippet")
+      ) {
+        throw error;
+      }
+      console.error("[Service] Error duplicating snippet:", error);
+      throw error instanceof Error
+        ? error
+        : new Error("Failed to duplicate snippet");
+    }
+  }
+
+  /**
+   * Fork a snippet: create a derived copy with editable content in the requesting user's collection.
+   * Preserves metadata and sets originalSnippetId for traceability.
+   */
+  async forkSnippet(
+    sourceId: string,
+    requestingUserWalletAddress: string,
+    data?: unknown,
+  ) {
+    try {
+      const source = await this.snippetRepository.findById(sourceId);
+      if (!source) {
+        throw new Error("Source snippet not found");
+      }
+
+      if (source.owner_wallet_address === requestingUserWalletAddress) {
+        throw new Error("Cannot fork your own snippet");
+      }
+
+      const overrides = data ? forkDuplicateSchema.parse(data) : undefined;
+
+      const fork = await this.snippetRepository.forkSnippet(
+        sourceId,
+        requestingUserWalletAddress,
+        overrides,
+      );
+
+      if (!fork) {
+        throw new Error("Failed to create forked snippet");
+      }
+
+      await appendActivityLog("snippet.forked", "snippet", {
+        actorWallet: requestingUserWalletAddress,
+        resourceId: fork.id,
+        metadata: {
+          originalSnippetId: sourceId,
+          title: fork.title,
+          language: fork.language,
+          forkedAt: new Date().toISOString(),
+        },
+      });
+
+      return fork;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message === "Source snippet not found" ||
+          error.message === "Cannot fork your own snippet")
+      ) {
+        throw error;
+      }
+      console.error("[Service] Error forking snippet:", error);
+      throw error instanceof Error
+        ? error
+        : new Error("Failed to fork snippet");
     }
   }
 }

@@ -124,8 +124,15 @@ export const duplicateSnippetSchema = z.object({
   ownerWalletAddress: z.string().optional(),
 });
 
+export const forkDuplicateSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+  code: z.string().min(1).optional(),
+});
+
 export type CreateSnippetDTO = z.infer<typeof createSnippetSchema>;
 export type UpdateSnippetDTO = z.infer<typeof updateSnippetSchema>;
 export type ForkSnippetDTO = z.infer<typeof forkSnippetSchema>;
 export type DuplicateSnippetDTO = z.infer<typeof duplicateSnippetSchema>;
 
+export type ForkDuplicateDTO = z.infer<typeof forkDuplicateSchema>;
