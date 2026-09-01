@@ -212,6 +212,7 @@ export class SnippetRepository {
           license_transaction_hash = COALESCE(${data.licenseTransactionHash || null}, license_transaction_hash),
           license_metadata = COALESCE(${data.licenseMetadata ? JSON.stringify(data.licenseMetadata) : null}, license_metadata),
           ipfs_cid = COALESCE(${data.ipfsCid || null}, ipfs_cid),
+          visibility = COALESCE(${data.visibility || null}, visibility),
           updated_at = ${updatedAt}
       WHERE id = ${id} AND is_deleted = false
       RETURNING *

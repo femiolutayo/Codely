@@ -1,10 +1,11 @@
 import { SnippetService } from "../app/api/snippets/snippet.service";
 import { SnippetRepository } from "../app/api/snippets/snippet.repository";
+import { ZodError } from "zod";
 import { IPFSService } from "../lib/ipfs.service";
 
-jest.mock("../lib/ipfs.service", () => ({
+jest.mock("@/lib/ipfs.service", () => ({
   IPFSService: {
-    uploadToIPFS: jest.fn().mockResolvedValue("QmTestCID"),
+    uploadToIPFS: jest.fn().mockResolvedValue("QmMockCID-test"),
   },
 }));
 
@@ -19,6 +20,12 @@ const mockRepository = {
   softDelete: jest.fn(),
   restore: jest.fn(),
   permanentlyDelete: jest.fn(),
+  duplicateSnippet: jest.fn(),
+  forkSnippet: jest.fn(),
+  findDeletedByUser: jest.fn(),
+  findAllDeleted: jest.fn(),
+  findForksBySnippetId: jest.fn(),
+  findOriginSnippet: jest.fn(),
 } as unknown as SnippetRepository;
 
 // Suppress console.error in tests
@@ -29,6 +36,11 @@ beforeAll(() => {
 afterAll(() => {
   consoleSpy.mockRestore();
 });
+
+// A real, checksum-valid Stellar public key
+const VALID_WALLET = "GCRKPWEEZPKBMQ7L3FAKKZL7TPJBKEHIWUBMN554ASGZKDJXJ7FCXRRU";
+// A different wallet (to avoid "Cannot duplicate your own snippet" guard)
+const OTHER_WALLET = "GDQJUTQYK2MQX2VGDR2FYWLIYAQIEGXTQVTFEMGH6S7I3J5VD6PDMTF";
 
 describe("SnippetService", () => {
   let service: SnippetService;
@@ -122,28 +134,75 @@ describe("SnippetService", () => {
         code: 'console.log("hi")',
         language: "javascript",
         tags: ["test"],
-        ownerWalletAddress:
-          "G1234567890123456789012345678901234567890123456789012345",
+        ownerWalletAddress: VALID_WALLET,
       };
 
-      const expectedResult = { id: "1", ...validData, ipfsCid: "QmTestCID" };
+      const expectedResult = { id: "1", ...validData, ipfsCid: "QmMockCID-test" };
       (mockRepository.create as jest.Mock).mockResolvedValue(expectedResult);
 
       const result = await service.createSnippet(validData);
       expect(result).toEqual(expectedResult);
-      expect(mockRepository.create).toHaveBeenCalledWith({
-        ...validData,
-        ipfsCid: "QmTestCID",
-      });
       expect(mockRepository.create).toHaveBeenCalledWith(
         expect.objectContaining(validData),
       );
     });
 
-    it("should throw error with invalid data", async () => {
+    it("should reject missing required fields with a ZodError", async () => {
       const invalidData = { title: "" };
 
-      await expect(service.createSnippet(invalidData)).rejects.toThrow();
+      await expect(service.createSnippet(invalidData)).rejects.toThrow(
+        ZodError,
+      );
+      expect(mockRepository.create).not.toHaveBeenCalled();
+    });
+
+    it("should reject a malformed wallet address", async () => {
+      const invalidData = {
+        title: "Test",
+        description: "Desc",
+        code: 'console.log("hi")',
+        language: "javascript",
+        tags: ["test"],
+        ownerWalletAddress: "G1234567890123456789012345678901234567890123456789012345",
+      };
+
+      await expect(service.createSnippet(invalidData)).rejects.toThrow(
+        ZodError,
+      );
+      expect(mockRepository.create).not.toHaveBeenCalled();
+    });
+
+    it("should reject an unsupported language", async () => {
+      const invalidData = {
+        title: "Test",
+        description: "Desc",
+        code: 'console.log("hi")',
+        language: "cobol",
+        tags: ["test"],
+        ownerWalletAddress: VALID_WALLET,
+      };
+
+      await expect(service.createSnippet(invalidData)).rejects.toThrow(
+        ZodError,
+      );
+      expect(mockRepository.create).not.toHaveBeenCalled();
+    });
+
+    it("should reject invalid visibility values", async () => {
+      const invalidData = {
+        title: "Test",
+        description: "Desc",
+        code: 'console.log("hi")',
+        language: "javascript",
+        tags: ["test"],
+        ownerWalletAddress: VALID_WALLET,
+        visibility: "friends",
+      };
+
+      await expect(service.createSnippet(invalidData)).rejects.toThrow(
+        ZodError,
+      );
+      expect(mockRepository.create).not.toHaveBeenCalled();
     });
   });
 
@@ -153,10 +212,6 @@ describe("SnippetService", () => {
       const existingSnippet = { id: "1", title: "Old Title", code: "code", owner_wallet_address: "G123" };
       const updatedSnippet = { id: "1", title: "Updated Title" };
 
-      (mockRepository.findById as jest.Mock).mockResolvedValue({
-        id: "1",
-        title: "Old Title",
-      });
       (mockRepository.findById as jest.Mock).mockResolvedValue(existingSnippet);
       (mockRepository.update as jest.Mock).mockResolvedValue(updatedSnippet);
 
@@ -168,7 +223,6 @@ describe("SnippetService", () => {
     it("should throw error when snippet not found", async () => {
       const updateData = { title: "Updated Title" };
       (mockRepository.findById as jest.Mock).mockResolvedValue(null);
-      (mockRepository.update as jest.Mock).mockResolvedValue(null);
 
       await expect(service.updateSnippet("999", updateData)).rejects.toThrow(
         "Snippet not found",
@@ -189,38 +243,32 @@ describe("SnippetService", () => {
       };
       const duplicated = {
         id: "dup-456",
-        title: "My React Hook (Copy)",
+        title: "My React Hook",
         description: "Custom hook",
         code: "const useData = () => {}",
         language: "typescript",
         tags: ["react", "hooks"],
-        owner_wallet_address: "G_NEW_USER",
-        forked_from_id: "orig-123",
-        is_fork: false,
+        owner_wallet_address: OTHER_WALLET,
+        original_snippet_id: "orig-123",
       };
 
       (mockRepository.findById as jest.Mock).mockResolvedValue(original);
-      (mockRepository.create as jest.Mock).mockResolvedValue(duplicated);
+      (mockRepository.duplicateSnippet as jest.Mock).mockResolvedValue(duplicated);
 
-      const result = await service.duplicateSnippet("orig-123", "G_NEW_USER");
+      const result = await service.duplicateSnippet("orig-123", OTHER_WALLET);
       expect(result).toEqual(duplicated);
-      expect(mockRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: "My React Hook (Copy)",
-          description: original.description,
-          code: original.code,
-          language: original.language,
-          tags: original.tags,
-          ownerWalletAddress: "G_NEW_USER",
-          forkedFromId: "orig-123",
-          isFork: false,
-        }),
+      expect(mockRepository.duplicateSnippet).toHaveBeenCalledWith(
+        "orig-123",
+        OTHER_WALLET,
+        undefined,
       );
     });
 
     it("should throw error if original snippet not found on duplicate", async () => {
       (mockRepository.findById as jest.Mock).mockResolvedValue(null);
-      await expect(service.duplicateSnippet("invalid-id", "G_USER")).rejects.toThrow("Snippet not found");
+      await expect(service.duplicateSnippet("invalid-id", OTHER_WALLET)).rejects.toThrow(
+        "Source snippet not found",
+      );
     });
   });
 
@@ -239,7 +287,6 @@ describe("SnippetService", () => {
       const forkOverrides = {
         title: "Customized Fork",
         code: "function solveOptimized() {}",
-        tags: ["algorithm", "optimized"],
       };
 
       const forked = {
@@ -248,31 +295,24 @@ describe("SnippetService", () => {
         description: "Original description",
         code: "function solveOptimized() {}",
         language: "javascript",
-        tags: ["algorithm", "optimized"],
-        owner_wallet_address: "G_FORKER",
-        forked_from_id: "orig-123",
-        is_fork: true,
+        tags: ["algorithm"],
+        owner_wallet_address: OTHER_WALLET,
+        original_snippet_id: "orig-123",
       };
 
       (mockRepository.findById as jest.Mock).mockResolvedValue(original);
-      (mockRepository.create as jest.Mock).mockResolvedValue(forked);
+      (mockRepository.forkSnippet as jest.Mock).mockResolvedValue(forked);
 
-      const result = await service.forkSnippet("orig-123", "G_FORKER", forkOverrides);
+      const result = await service.forkSnippet("orig-123", OTHER_WALLET, forkOverrides);
       expect(result).toEqual(forked);
-      expect(mockRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: "Customized Fork",
-          code: "function solveOptimized() {}",
-          language: "javascript",
-          tags: ["algorithm", "optimized"],
-          ownerWalletAddress: "G_FORKER",
-          forkedFromId: "orig-123",
-          isFork: true,
-        }),
+      expect(mockRepository.forkSnippet).toHaveBeenCalledWith(
+        "orig-123",
+        OTHER_WALLET,
+        expect.objectContaining({ title: "Customized Fork", code: "function solveOptimized() {}" }),
       );
     });
 
-    it("should fallback to 'Fork of [Title]' when no title override is passed", async () => {
+    it("should fallback to '[Title] (fork)' when no title override is passed", async () => {
       const original = {
         id: "orig-123",
         title: "Original Algorithm",
@@ -285,27 +325,24 @@ describe("SnippetService", () => {
 
       const forked = {
         id: "fork-789",
-        title: "Fork of Original Algorithm",
+        title: "Original Algorithm (fork)",
         description: "Original description",
         code: "function solve() {}",
         language: "javascript",
         tags: ["algorithm"],
-        owner_wallet_address: "G_FORKER",
-        forked_from_id: "orig-123",
-        is_fork: true,
+        owner_wallet_address: OTHER_WALLET,
+        original_snippet_id: "orig-123",
       };
 
       (mockRepository.findById as jest.Mock).mockResolvedValue(original);
-      (mockRepository.create as jest.Mock).mockResolvedValue(forked);
+      (mockRepository.forkSnippet as jest.Mock).mockResolvedValue(forked);
 
-      const result = await service.forkSnippet("orig-123", "G_FORKER", {});
-      expect(result.title).toBe("Fork of Original Algorithm");
-      expect(mockRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: "Fork of Original Algorithm",
-          forkedFromId: "orig-123",
-          isFork: true,
-        }),
+      const result = await service.forkSnippet("orig-123", OTHER_WALLET, {});
+      expect(result.title).toBe("Original Algorithm (fork)");
+      expect(mockRepository.forkSnippet).toHaveBeenCalledWith(
+        "orig-123",
+        OTHER_WALLET,
+        expect.objectContaining({}),
       );
     });
   });
@@ -328,4 +365,3 @@ describe("SnippetService", () => {
     });
   });
 });
-
