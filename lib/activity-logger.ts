@@ -1,7 +1,15 @@
 import { neon } from "@neondatabase/serverless";
 
-// Initialise the Neon DB client
-const sql = neon(process.env.DATABASE_URL!);
+let sql: ReturnType<typeof neon> | null = null;
+function getSql(): ReturnType<typeof neon> | null {
+  if (!sql) {
+    if (!process.env.DATABASE_URL) {
+      return null;
+    }
+    sql = neon(process.env.DATABASE_URL!);
+  }
+  return sql;
+}
 
 export type ActivityAction =
   | "DELETE"
@@ -15,6 +23,8 @@ export type ActivityAction =
   | "snippet.deleted"
   | "snippet.soft_deleted"
   | "snippet.restored"
+  | "snippet.forked"
+  | "snippet.duplicated"
   | "snippet.owner_transfer"
   | "snippet.owner_transfer_failed"
   | "wallet.connected"
@@ -23,7 +33,12 @@ export type ActivityAction =
   | "signature.failed"
   | "snippet.proof_generated"
   | "snippet.proof_verified"
-  | "snippet.proof_verification_failed";
+  | "snippet.proof_verification_failed"
+  | "stellar.tx.submitted"
+  | "stellar.tx.confirmed"
+  | "stellar.tx.applied"
+  | "stellar.tx.failed"
+  | "stellar.tx.dead";
 
 export interface ActivityLogEntry {
   id: string;
@@ -62,7 +77,7 @@ export class ActivityLogger {
         };
       }
 
-      const result = await sql`
+      const result = await db`
         INSERT INTO activity_logs (id, snippet_id, action, user_wallet_address, details, created_at)
         VALUES (${id}, ${snippetId}, ${action}, ${userWalletAddress}, ${JSON.stringify(details)}, ${createdAt})
         RETURNING *
@@ -101,7 +116,6 @@ export function extractUserAgent(headers: Headers): string | null {
   return headers.get("user-agent") ?? null;
 }
 
-/** Resource types that can be referenced by a log entry. */
 export type ResourceType = "snippet" | "wallet";
 
 /**
@@ -131,7 +145,9 @@ export async function appendActivityLog(
   } = ctx;
 
   try {
-    await sql`
+    const db = getSql();
+    if (!db) return;
+    await db`
       INSERT INTO activity_logs (
         actor_wallet,
         action,

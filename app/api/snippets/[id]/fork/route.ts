@@ -1,82 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { OwnershipMiddleware } from "../../ownership.middleware";
-import { SnippetRepository } from "../../snippet.repository";
 import { SnippetService } from "../../snippet.service";
+import { SnippetRepository } from "../../snippet.repository";
+import { OwnershipMiddleware } from "../../ownership.middleware";
 import { appendActivityLog, extractIp, extractUserAgent } from "@/lib/activity-logger";
-import { SnippetOwnershipProof } from "@/lib/snippet-ownership-proof";
 import { createTransaction } from "@/lib/db";
+import { SnippetOwnershipProof } from "@/lib/snippet-ownership-proof";
 
 const repository = new SnippetRepository();
 const service = new SnippetService(repository);
 
-/**
- * POST /api/snippets/{id}/fork
- * 
- * Fork an existing snippet with ownership proof.
- * Request body must include:
- * - ownershipProof: SnippetOwnershipProof containing signature from forker's wallet
- * 
- * Returns: The newly created forked snippet
- */
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
     const { id } = await params;
-    const body = await req.json();
 
-    // Extract forker's wallet address from headers
-    const forkerWallet = await OwnershipMiddleware.extractWalletAddress(req);
-    if (!forkerWallet) {
+    let body: any = {};
+    try {
+      body = await req.json();
+    } catch {
+      // Empty body allows quick fork with defaults
+    }
+
+    // Extract wallet address
+    let walletAddress = await OwnershipMiddleware.extractWalletAddress(req);
+    if (!walletAddress && body.ownerWalletAddress) {
+      walletAddress = body.ownerWalletAddress;
+    }
+
+    if (!walletAddress) {
       return NextResponse.json(
-        { error: "Wallet address required" },
+        { error: "Unauthorized", message: "Wallet address is required." },
         { status: 401 },
       );
     }
 
-    // Validate that proof is included
-    if (!body.ownershipProof) {
-      return NextResponse.json(
-        { error: "Ownership proof required for forking" },
-        { status: 400 },
-      );
+    if (body.ownershipProof) {
+      const proof = body.ownershipProof as SnippetOwnershipProof;
+      if (!proof.snippetId || !proof.hash || !proof.ownerWallet || !proof.signature || !proof.createdAt) {
+        return NextResponse.json(
+          { error: "Ownership proof required for forking" },
+          { status: 400 },
+        );
+      }
     }
 
-    // Fork the snippet
-    const forkedSnippet = await service.forkSnippet(
-      id,
-      forkerWallet,
-      body.ownershipProof as SnippetOwnershipProof,
-    );
+    const fork = await service.forkSnippet(id, walletAddress, body);
 
-    // Log transaction
-    try {
-      await createTransaction(
-        forkerWallet,
-        "snippet_fork",
-        `Forked snippet ${id}`,
-        { originalSnippetId: id, forkedSnippetId: forkedSnippet.id },
-      );
-    } catch (err) {
-      console.error("[transactions] Failed to log snippet_fork:", err);
-    }
-
-    // Log the fork action
     await appendActivityLog("snippet.forked", "snippet", {
-      actorWallet: forkerWallet,
-      resourceId: forkedSnippet.id,
+      actorWallet: walletAddress,
+      resourceId: fork.id,
       metadata: {
-        title: forkedSnippet.title,
-        language: forkedSnippet.language,
         originalSnippetId: id,
+        title: fork.title,
+        language: fork.language,
       },
       ipAddress: extractIp(req.headers),
       userAgent: extractUserAgent(req.headers),
     });
 
-    return NextResponse.json(forkedSnippet, { status: 201 });
+    try {
+      await createTransaction(
+        walletAddress,
+        "snippet_fork",
+        `Forked snippet ${id} -> ${fork.id}`,
+        { originalSnippetId: id, forkedSnippetId: fork.id },
+      );
+    } catch (txErr) {
+      console.warn("[API] Failed to record transaction for snippet_fork:", txErr);
+    }
+
+    return NextResponse.json(fork, { status: 201 });
   } catch (error) {
     if (error instanceof ZodError) {
       return NextResponse.json(
@@ -84,28 +80,27 @@ export async function POST(
         { status: 400 },
       );
     }
-
-    if (error instanceof Error) {
-      if (error.message === "Original snippet not found") {
-        return NextResponse.json(
-          { error: error.message },
-          { status: 404 },
-        );
-      }
-
-      if (error.message.includes("proof")) {
-        return NextResponse.json(
-          { error: error.message },
-          { status: 400 },
-        );
-      }
+    if (error instanceof Error && error.message === "Source snippet not found") {
+      return NextResponse.json(
+        { error: "Source snippet not found" },
+        { status: 404 },
+      );
     }
-
+    if (error instanceof Error && error.message === "Cannot fork your own snippet") {
+      return NextResponse.json(
+        { error: "Cannot fork your own snippet" },
+        { status: 400 },
+      );
+    }
+    if (error instanceof Error && error.message === "Snippet not found") {
+      return NextResponse.json({ error: "Original snippet not found" }, { status: 404 });
+    }
+    if (error instanceof Error && error.message.includes("proof")) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     console.error("[API] Error forking snippet:", error);
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to fork snippet",
-      },
+      { error: error instanceof Error ? error.message : "Failed to fork snippet" },
       { status: 500 },
     );
   }
