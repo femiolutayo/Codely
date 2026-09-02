@@ -232,7 +232,6 @@ export default function SnippetForm({
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchedValues, editingId]);
 
   // Cleanup timers on unmount

@@ -1,3 +1,5 @@
+/* global require */
+
 const { TextDecoder, TextEncoder } = require("util");
 
 if (typeof globalThis.TextDecoder === "undefined") {

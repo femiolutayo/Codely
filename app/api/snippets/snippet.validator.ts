@@ -86,14 +86,14 @@ export const licenseTypeSchema = z
 // ---------------------------------------------------------------------------
 
 export const createSnippetSchema = z.object({
-  title: z.string().min(1, "Title is required"),
-  description: z.string().min(1, "Description is required"),
-  code: z.string().min(1, "Code is required"),
+  title: titleSchema,
+  description: descriptionSchema,
+  code: codeSchema,
   language: languageSchema,
-  tags: z.array(z.string()).min(1, "At least one tag is required"),
+  tags: tagsSchema.min(1, "At least one tag is required"),
   ownerWalletAddress: walletAddressSchema,
-  licenseType: z.string().optional(),
-  visibility: visibilitySchema.optional(),
+  licenseType: licenseTypeSchema,
+  visibility: visibilitySchema.default("private"),
   forkedFromId: z.string().uuid("Invalid origin snippet UUID").nullable().optional(),
   isFork: z.boolean().optional(),
   ownershipProof: z.object({
@@ -106,14 +106,29 @@ export const createSnippetSchema = z.object({
 });
 
 export const updateSnippetSchema = z.object({
-  title: z.string().min(1, "Title is required").optional(),
-  description: z.string().min(1, "Description is required").optional(),
-  code: z.string().min(1, "Code is required").optional(),
-  language: z.string().min(1, "Language is required").optional(),
-  tags: z.array(z.string()).min(1, "At least one tag is required").optional(),
-  licenseType: z.string().optional(),
+  title: titleSchema.optional(),
+  description: descriptionSchema.optional(),
+  code: codeSchema.optional(),
+  language: languageSchema.optional(),
+  tags: tagsSchema.min(1, "At least one tag is required").optional(),
+  licenseType: licenseTypeSchema,
+  visibility: visibilitySchema.optional(),
   forkedFromId: z.string().uuid("Invalid origin snippet UUID").nullable().optional(),
   isFork: z.boolean().optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, {
+  message: "At least one field must be provided to update a snippet",
+});
+
+export const importSnippetSchema = createSnippetSchema.omit({
+  ownerWalletAddress: true,
+}).strict();
+
+export const shareSnippetSchema = z.object({
+  isReadOnly: z.boolean().optional(),
+  expiresAt: z.string().optional().refine(
+    (value) => value === undefined || !Number.isNaN(Date.parse(value)),
+    "expiresAt must be a valid date string",
+  ),
 });
 
 export const forkSnippetSchema = z.object({
@@ -139,7 +154,49 @@ export const forkDuplicateSchema = z.object({
 
 export type CreateSnippetDTO = z.infer<typeof createSnippetSchema>;
 export type UpdateSnippetDTO = z.infer<typeof updateSnippetSchema>;
+export type ImportSnippetDTO = z.infer<typeof importSnippetSchema>;
+export type ShareSnippetDTO = z.infer<typeof shareSnippetSchema>;
 export type ForkSnippetDTO = z.infer<typeof forkSnippetSchema>;
 export type DuplicateSnippetDTO = z.infer<typeof duplicateSnippetSchema>;
 
 export type ForkDuplicateDTO = z.infer<typeof forkDuplicateSchema>;
+
+export interface ValidationErrorDetail {
+  field: string;
+  message: string;
+}
+
+export interface ValidationErrorBody {
+  error: "Validation failed";
+  message: string;
+  details: ValidationErrorDetail[];
+}
+
+export function validationErrorBody(
+  error: z.ZodError,
+  fieldPrefix = "",
+): ValidationErrorBody {
+  const details = error.issues.map((issue) => ({
+    field: fieldPrefix
+      ? `${fieldPrefix}.${issue.path.join(".") || "body"}`
+      : issue.path.join(".") || "body",
+    message: issue.message,
+  }));
+
+  return {
+    error: "Validation failed",
+    message: details[0]?.message ?? "Request validation failed",
+    details,
+  };
+}
+
+export function validationFailureBody(
+  message: string,
+  field = "body",
+): ValidationErrorBody {
+  return {
+    error: "Validation failed",
+    message,
+    details: [{ field, message }],
+  };
+}
