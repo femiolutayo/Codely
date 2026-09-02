@@ -357,4 +357,113 @@ export class SnippetService {
         : new Error("Failed to permanently delete snippet");
     }
   }
+
+  /**
+   * Fork a snippet: create a new snippet owned by the forker with same code/metadata
+   * Generates and anchors ownership proof for the forked snippet
+   */
+  async forkSnippet(
+    originalSnippetId: string,
+    forkerWalletAddress: string,
+    proof: SnippetOwnershipProof,
+  ) {
+    try {
+      // 1. Get the original snippet
+      const original = await this.snippetRepository.findById(originalSnippetId);
+      if (!original) {
+        throw new Error("Original snippet not found");
+      }
+
+      // 2. Validate the fork proof
+      const proofCheck = verifySnippetOwnershipProof(proof);
+      if (!proofCheck.valid) {
+        await appendActivityLog("snippet.fork_proof_verification_failed", "snippet", {
+          actorWallet: forkerWalletAddress,
+          metadata: { originalSnippetId, error: proofCheck.error || "Invalid fork proof" },
+        });
+        throw new Error(proofCheck.error || "Invalid fork proof");
+      }
+
+      // 3. Verify proof matches forker and content
+      if (proof.ownerWallet.toUpperCase() !== forkerWalletAddress.toUpperCase()) {
+        await appendActivityLog("snippet.fork_proof_verification_failed", "snippet", {
+          actorWallet: forkerWalletAddress,
+          metadata: { originalSnippetId, error: "Proof wallet does not match forker" },
+        });
+        throw new Error("Proof wallet does not match forker");
+      }
+
+      const expectedHash = hashSnippetContent(original.code);
+      if (proof.hash !== expectedHash) {
+        await appendActivityLog("snippet.fork_proof_verification_failed", "snippet", {
+          actorWallet: forkerWalletAddress,
+          metadata: { originalSnippetId, error: "Proof hash does not match code" },
+        });
+        throw new Error("Proof hash does not match snippet code");
+      }
+
+      // 4. Upload to IPFS
+      let ipfsCid;
+      try {
+        ipfsCid = await IPFSService.uploadToIPFS(original.code);
+      } catch (ipfsError) {
+        console.error("[Service] IPFS upload failed during fork:", ipfsError);
+        throw new Error("Failed to upload forked snippet to IPFS");
+      }
+
+      // 5. Create the forked snippet
+      const forkedSnippet = await this.snippetRepository.create({
+        title: `${original.title} (forked)`,
+        description: original.description
+          ? `Forked from snippet ${originalSnippetId}: ${original.description}`
+          : `Forked from snippet ${originalSnippetId}`,
+        code: original.code,
+        language: original.language,
+        tags: original.tags || [],
+        licenseType: original.license_type,
+        ownerWalletAddress: forkerWalletAddress,
+        ipfsCid,
+        id: proof.snippetId, // Use the snippet ID from the proof
+      });
+
+      // 6. Anchor the proof to Stellar
+      const anchor = await submitHashToStellar(
+        process.env.STELLAR_SECRET_KEY || "",
+        proof.signature,
+        proof.snippetId,
+        proof.createdAt,
+      );
+
+      if (!anchor.success || !anchor.transactionHash) {
+        throw new Error(anchor.error || "Failed to anchor fork proof to Stellar");
+      }
+
+      // 7. Save the proof to the database
+      await this.snippetRepository.saveOwnershipProof(proof, anchor.transactionHash);
+
+      // 8. Log the fork action
+      await appendActivityLog("snippet.forked", "snippet", {
+        actorWallet: forkerWalletAddress,
+        resourceId: forkedSnippet.id,
+        metadata: {
+          title: forkedSnippet.title,
+          language: forkedSnippet.language,
+          originalSnippetId,
+          proofHash: proof.hash,
+          createdAt: proof.createdAt,
+        },
+      });
+
+      return forkedSnippet;
+    } catch (error) {
+      console.error("[Service] Error forking snippet:", error);
+      if (
+        error instanceof Error &&
+        (error.message.includes("proof") || error.message.includes("not found"))
+      ) {
+        throw error;
+      }
+      throw new Error("Failed to fork snippet");
+    }
+  }
 }

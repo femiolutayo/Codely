@@ -54,6 +54,7 @@ export function signSnippetOwnershipProof(
 
 export function verifySnippetOwnershipProof(
   proof: SnippetOwnershipProof,
+  options?: { maxAgeSeconds?: number; now?: Date },
 ): { valid: boolean; error?: string } {
   try {
     if (!proof.snippetId || !proof.hash || !proof.ownerWallet || !proof.signature || !proof.createdAt) {
@@ -63,6 +64,19 @@ export function verifySnippetOwnershipProof(
     const createdAt = new Date(proof.createdAt);
     if (Number.isNaN(createdAt.getTime())) {
       return { valid: false, error: "Invalid proof timestamp" };
+    }
+
+    // Replay attack prevention is optional and opt-in so legacy proofs do not fail by default.
+    if (options?.maxAgeSeconds !== undefined) {
+      const maxAgeSeconds = options.maxAgeSeconds;
+      const now = options?.now ?? new Date();
+      const ageSeconds = (now.getTime() - createdAt.getTime()) / 1000;
+      if (ageSeconds < 0) {
+        return { valid: false, error: "Proof timestamp is in the future" };
+      }
+      if (ageSeconds > maxAgeSeconds) {
+        return { valid: false, error: `Proof expired (older than ${maxAgeSeconds} seconds)` };
+      }
     }
 
     const keypair = StellarSdk.Keypair.fromPublicKey(proof.ownerWallet);

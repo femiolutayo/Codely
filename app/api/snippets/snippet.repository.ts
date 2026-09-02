@@ -69,12 +69,21 @@ export class SnippetRepository {
   }
 
   async saveOwnershipProof(proof: SnippetOwnershipProof, anchoredTransactionHash?: string) {
+    const existing = await this.sql`
+      SELECT snippet_id
+      FROM snippet_ownership_proofs
+      WHERE snippet_id = ${proof.snippetId}
+    `;
+
+    if (existing[0]) {
+      throw new Error("Ownership proof already exists");
+    }
+
     const result = await this.sql`
       INSERT INTO snippet_ownership_proofs
         (snippet_id, content_hash, owner_wallet, signature, created_at, anchored_transaction_hash, anchored_at)
       VALUES
         (${proof.snippetId}, ${proof.hash}, ${proof.ownerWallet}, ${proof.signature}, ${proof.createdAt}, ${anchoredTransactionHash || null}, ${anchoredTransactionHash ? new Date() : null})
-      ON CONFLICT (snippet_id) DO NOTHING
       RETURNING *
     `;
     return result[0] || null;
